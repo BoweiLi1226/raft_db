@@ -66,6 +66,8 @@ impl SharedKVStore {
 
 #[cfg(test)]
 mod tests {
+    use tokio::task::JoinSet;
+
     use super::*;
 
     #[tokio::test]
@@ -87,10 +89,10 @@ mod tests {
     #[tokio::test]
     async fn test_with_multiple_callers() {
         let store = SharedKVStore::new();
-        let mut handles = vec![];
-        for i in 1..20 {
+        let mut join_set = JoinSet::new();
+        for i in 1..100 {
             let mut store = store.clone();
-            let handle = tokio::spawn(async move {
+            join_set.spawn(async move {
                 let k = format!("key_{}", i);
                 let v = format!("value_{}", i);
                 store
@@ -102,12 +104,9 @@ mod tests {
                 let s = store.get(GetArgs { key: k }).await.unwrap();
                 assert_eq!(v, s);
             });
-            handles.push(handle);
         }
 
-        for handle in handles {
-            handle.await.unwrap();
-        }
+        join_set.join_all().await;
 
         for i in 1..20 {
             let s = store
