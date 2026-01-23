@@ -108,7 +108,7 @@ mod tests {
 
         join_set.join_all().await;
 
-        for i in 1..20 {
+        for i in 1..100 {
             let s = store
                 .get(GetArgs {
                     key: format!("key_{}", i),
