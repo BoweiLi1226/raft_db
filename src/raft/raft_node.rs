@@ -1,5 +1,9 @@
 use std::{sync::Arc, time::Duration};
-use tokio::{select, sync::Mutex, time};
+use tokio::{
+    select,
+    sync::{Mutex, Notify},
+    time,
+};
 use tonic::{Request, Response, Status};
 
 use crate::raft::{
@@ -12,6 +16,7 @@ use crate::raft::{
 pub struct RaftNode {
     pub config: RaftConfig,
     pub state: Mutex<RaftState>,
+    notify_heartbeat: Notify,
 }
 
 impl RaftNode {
@@ -19,6 +24,7 @@ impl RaftNode {
         Arc::new(Self {
             config,
             state: Mutex::new(RaftState::new()),
+            notify_heartbeat: Notify::new(),
         })
     }
 
@@ -29,14 +35,20 @@ impl RaftNode {
 
     async fn election_ticker(&self) {
         loop {
-            let timeout_ms: u64 = rand::random_range(150..=300) + 300;
-            let duration = Duration::from_millis(timeout_ms);
-            let sleep = time::sleep(duration);
+            let timeout = Duration::from_millis(rand::random_range(150..=300) + 300);
+            let sleep = time::sleep(timeout);
             tokio::pin!(sleep);
             select! {
-                () = &mut sleep => {
-                    self.election().await;
+                _ = &mut sleep => {
+                    let should_elect = {
+                        let state = self.state.lock().await;
+                        state.role != Role::LEADER && state.last_tick.elapsed() >= timeout
+                    };
+                    if should_elect {
+                        self.election().await;
+                    }
                 }
+                _ = self.notify_heartbeat.notified() => {}
             }
         }
     }
@@ -60,10 +72,12 @@ impl Raft for RaftNode {
 
         if args.term < state.term {
             reply.vote_granted = false;
+            return Ok(Response::new(reply));
         }
 
         if args.term >= state.term {
             state.become_follower(args.term);
+            self.notify_heartbeat.notify_one();
         }
 
         if state.voted_for.is_none() || state.voted_for == Some(args.candidate_id) {
@@ -102,6 +116,7 @@ impl Raft for RaftNode {
 
         if (args.term > state.term) || (args.term == state.term && state.role != Role::LEADER) {
             state.become_follower(args.term);
+            self.notify_heartbeat.notify_one();
         }
 
         //TODO: Check Log Completeness
