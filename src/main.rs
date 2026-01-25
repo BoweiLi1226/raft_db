@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let raft_config = RaftConfig::new(me, endpoints);
     let addr = raft_config.nodes[&me];
     let raft_node = RaftNode::from_config(raft_config);
-    raft_node.run();
+    RaftNode::spawn(&raft_node);
     let raft_server = RaftServer::new(raft_node);
     tracing::info!("Starting server {} on port {:?}", me, addr);
     Server::builder()

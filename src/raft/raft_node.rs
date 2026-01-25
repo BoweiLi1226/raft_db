@@ -28,8 +28,8 @@ impl RaftNode {
         })
     }
 
-    pub fn run(self: &Arc<Self>) {
-        let raft_node = self.clone();
+    pub fn spawn(node: &Arc<Self>) {
+        let raft_node = node.clone();
         tokio::spawn(async move { raft_node.election_ticker().await });
     }
 
