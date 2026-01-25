@@ -1,6 +1,5 @@
-use std::{collections::HashMap, sync::Arc};
-
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use tokio::sync::RwLock;
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -20,7 +19,7 @@ pub enum Command {
     PUT(PutArgs),
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 struct KVStore {
     data: HashMap<String, String>,
 }
@@ -41,19 +40,19 @@ impl KVStore {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct SharedKVStore {
-    data: Arc<RwLock<KVStore>>,
+    data: RwLock<KVStore>,
 }
 
 impl SharedKVStore {
     pub fn new() -> Self {
         Self {
-            data: Arc::new(RwLock::new(KVStore::new())),
+            data: RwLock::new(KVStore::new()),
         }
     }
 
-    pub async fn put(&mut self, args: PutArgs) {
+    pub async fn put(&self, args: PutArgs) {
         let mut guard = self.data.write().await;
         guard.put(args);
     }
@@ -66,16 +65,16 @@ impl SharedKVStore {
 
 #[cfg(test)]
 mod tests {
-    use tokio::task::JoinSet;
-
     use super::*;
+    use std::sync::Arc;
+    use tokio::task::JoinSet;
 
     #[tokio::test]
     async fn test_with_single_caller() {
         let k = String::from("test_key");
         let v = String::from("test_value");
 
-        let mut store = SharedKVStore::new();
+        let store = Arc::new(SharedKVStore::new());
         store
             .put(PutArgs {
                 key: k.clone(),
@@ -88,10 +87,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_multiple_callers() {
-        let store = SharedKVStore::new();
+        let store = Arc::new(SharedKVStore::new());
         let mut join_set = JoinSet::new();
         for i in 1..100 {
-            let mut store = store.clone();
+            let store = store.clone();
             join_set.spawn(async move {
                 let k = format!("key_{}", i);
                 let v = format!("value_{}", i);

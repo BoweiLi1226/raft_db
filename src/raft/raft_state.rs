@@ -8,7 +8,7 @@ pub enum Role {
     LEADER,
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug)]
 pub struct RaftState {
     pub term: u64,
     pub voted_for: Option<u32>,
