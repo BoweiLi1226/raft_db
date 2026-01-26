@@ -1,30 +1,30 @@
-use std::{sync::Arc, time::Duration};
-use tokio::{
-    select,
-    sync::{Mutex, Notify},
-    time,
-};
-use tonic::{Request, Response, Status};
+use std::{collections::HashMap, sync::Arc, time::Duration};
+use tokio::{sync::Mutex, time};
+use tonic::{Request, Response, Status, transport::Channel};
 
 use crate::raft::{
     AppendEntriesArgs, AppendEntriesReply, Raft, RequestVoteArgs, RequestVoteReply,
     raft_config::RaftConfig,
+    raft_proto::raft_client::RaftClient,
     raft_state::{RaftState, Role},
 };
 
 #[derive(Debug)]
 pub struct RaftNode {
-    pub config: RaftConfig,
-    pub state: Mutex<RaftState>,
-    notify_heartbeat: Notify,
+    config: RaftConfig,
+    state: Mutex<RaftState>,
+    peer_clients: HashMap<u32, RaftClient<Channel>>,
 }
 
 impl RaftNode {
     pub fn from_config(config: RaftConfig) -> Arc<Self> {
+        let peer_clients = config.make_clients();
+        let me = config.me;
+        let peer_ids: Vec<u32> = config.nodes.iter().map(|(&id, _)| id).collect();
         Arc::new(Self {
             config,
-            state: Mutex::new(RaftState::new()),
-            notify_heartbeat: Notify::new(),
+            state: Mutex::new(RaftState::with_self_and_peer_ids(me, peer_ids)),
+            peer_clients,
         })
     }
 
@@ -34,27 +34,26 @@ impl RaftNode {
     }
 
     async fn election_ticker(&self) {
+        // TODO: Pending Improvement?
+        // Right now if last_tick gets reset right after sleep starts,
+        // should_elect would be false.
+        // Not sure if this should be the case though.
         loop {
-            let timeout = Duration::from_millis(rand::random_range(150..=300) + 300);
-            let sleep = time::sleep(timeout);
-            tokio::pin!(sleep);
-            select! {
-                _ = &mut sleep => {
-                    let should_elect = {
-                        let state = self.state.lock().await;
-                        state.role != Role::LEADER && state.last_tick.elapsed() >= timeout
-                    };
-                    if should_elect {
-                        self.election().await;
-                    }
-                }
-                _ = self.notify_heartbeat.notified() => {}
+            let timeout = Duration::from_millis(rand::random_range(350..=600));
+            time::sleep(timeout).await;
+            let should_elect = {
+                let state = self.state.lock().await;
+                state.role != Role::LEADER && state.timeout(timeout)
+            };
+            if should_elect {
+                self.election().await;
             }
         }
     }
 
     async fn election(&self) {
         tracing::info!("Raft node {}: I started election.", self.config.me);
+        // TODO: Inplement election logic
     }
 }
 
@@ -77,7 +76,6 @@ impl Raft for RaftNode {
 
         if args.term >= state.term {
             state.become_follower(args.term);
-            self.notify_heartbeat.notify_one();
         }
 
         if state.voted_for.is_none() || state.voted_for == Some(args.candidate_id) {
@@ -116,7 +114,6 @@ impl Raft for RaftNode {
 
         if (args.term > state.term) || (args.term == state.term && state.role != Role::LEADER) {
             state.become_follower(args.term);
-            self.notify_heartbeat.notify_one();
         }
 
         //TODO: Check Log Completeness
