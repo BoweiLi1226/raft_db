@@ -104,6 +104,9 @@ impl RaftNode {
             });
         }
 
+        // TODO: I think we could potentially change the logic to notify on votes instead of join
+        // tasks
+        // TODO: Make sure to handle the case when node receives higher term
         // collect votes
         while tasks.join_next().await.is_some() {
             let vote_obtained = vote_obtained.load(atomic::Ordering::SeqCst);
@@ -116,6 +119,7 @@ impl RaftNode {
                 let mut state = self.state.lock().await;
                 if state.term == current_term && state.role == Role::CANDIDATE {
                     state.become_leader();
+                    // TODO: Need to notify heartbeat_ticker
                 } else {
                     return;
                 }
