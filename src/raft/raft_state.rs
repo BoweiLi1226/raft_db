@@ -33,7 +33,10 @@ impl RaftState {
         Self {
             term: 0,
             voted_for: None,
-            log: Vec::new(),
+            log: vec![LogEntry {
+                term: 0,
+                command: "".into(),
+            }],
             commit_index: 0,
             last_applied: 0,
             next_indices: None,
@@ -93,5 +96,10 @@ impl RaftState {
         }
         self.next_indices = Some(next_indices_map);
         self.match_indices = Some(match_indices_map);
+        tracing::info!(
+            "Raft node {}: I won the election and become leader at term {}",
+            self.me,
+            self.term
+        );
     }
 }

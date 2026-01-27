@@ -1,5 +1,10 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
-use tokio::{sync::Mutex, time};
+use core::panic;
+use std::{
+    collections::HashMap,
+    sync::{Arc, atomic},
+    time::Duration,
+};
+use tokio::{sync::Mutex, task::JoinSet, time};
 use tonic::{Request, Response, Status, transport::Channel};
 
 use crate::raft::{
@@ -28,9 +33,12 @@ impl RaftNode {
         })
     }
 
-    pub fn spawn(node: &Arc<Self>) {
+    pub fn start_background_tasks(node: &Arc<Self>) {
         let raft_node = node.clone();
         tokio::spawn(async move { raft_node.election_ticker().await });
+
+        let raft_node = node.clone();
+        tokio::spawn(async move { raft_node.heartbeat_ticker().await });
     }
 
     async fn election_ticker(&self) {
@@ -51,9 +59,68 @@ impl RaftNode {
         }
     }
 
+    async fn heartbeat_ticker(&self) {
+        todo!("We can implement using notifier");
+    }
+
     async fn election(&self) {
-        tracing::info!("Raft node {}: I started election.", self.config.me);
-        // TODO: Inplement election logic
+        // TODO: add election timeout logic
+        let (args, current_term) = {
+            let mut state = self.state.lock().await;
+            state.become_candidate();
+            let Some(last_log) = state.log.last() else {
+                panic!(
+                    "Raft node {}: I should have had at least one dummy log entry",
+                    self.config.me,
+                );
+            };
+            (
+                RequestVoteArgs {
+                    term: state.term,
+                    candidate_id: self.config.me,
+                    last_log_index: (state.log.len() - 1) as u64,
+                    last_log_term: last_log.term,
+                },
+                state.term,
+            )
+        };
+
+        // voted for self
+        let vote_obtained = Arc::new(atomic::AtomicU32::new(1));
+
+        // rpc calls
+        let mut tasks = JoinSet::new();
+        for client in self.peer_clients.values() {
+            let request = Request::new(args);
+            let mut client = client.clone();
+            let vote_obtained_copy = vote_obtained.clone();
+            tasks.spawn(async move {
+                if let Ok(response) = client.request_vote(request).await {
+                    let reply = response.into_inner();
+                    if reply.vote_granted {
+                        vote_obtained_copy.fetch_add(1, atomic::Ordering::SeqCst);
+                    }
+                }
+            });
+        }
+
+        // collect votes
+        while tasks.join_next().await.is_some() {
+            let vote_obtained = vote_obtained.load(atomic::Ordering::SeqCst);
+            if vote_obtained > (self.config.nodes.len() / 2) as u32 {
+                tasks.abort_all();
+            } else {
+                continue;
+            }
+            {
+                let mut state = self.state.lock().await;
+                if state.term == current_term && state.role == Role::CANDIDATE {
+                    state.become_leader();
+                } else {
+                    return;
+                }
+            }
+        }
     }
 }
 

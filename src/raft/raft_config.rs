@@ -25,8 +25,7 @@ impl RaftConfig {
     }
 
     pub fn make_clients(&self) -> HashMap<u32, RaftClient<Channel>> {
-        self
-            .nodes
+        self.nodes
             .iter()
             .filter(|&(&id, _)| id != self.me)
             .map(|(&id, addr)| {
