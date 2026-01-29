@@ -27,24 +27,26 @@ pub struct RaftNode {
     notify_election_vote: Arc<Notify>,
 }
 
-impl RaftNode {
-    pub fn from_config(config: RaftConfig) -> Arc<Self> {
-        let peer_clients = config.make_clients();
-        let me = config.me;
-        let peer_ids: Vec<u32> = config.nodes.iter().map(|(&id, _)| id).collect();
-        Arc::new(Self {
-            config,
+impl From<RaftConfig> for RaftNode {
+    fn from(raft_config: RaftConfig) -> Self {
+        let peer_clients = raft_config.make_clients();
+        let me = raft_config.me;
+        let peer_ids: Vec<u32> = raft_config.nodes.iter().map(|(&id, _)| id).collect();
+        Self {
+            config: raft_config,
             state: Mutex::new(RaftState::with_self_and_peer_ids(me, peer_ids)),
             peer_clients,
             notify_election_vote: Arc::new(Notify::new()),
-        })
+        }
     }
+}
 
+impl RaftNode {
     pub fn start_background_tasks(node: &Arc<Self>) {
-        let raft_node = node.clone();
+        let raft_node = Arc::clone(node);
         tokio::spawn(async move { raft_node.election_ticker().await });
 
-        let raft_node = node.clone();
+        let raft_node = Arc::clone(node);
         tokio::spawn(async move { raft_node.heartbeat_ticker().await });
     }
 
