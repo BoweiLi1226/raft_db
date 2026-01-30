@@ -10,10 +10,10 @@ use tokio::{
     task::JoinSet,
     time,
 };
-use tonic::{Request, Response, Status, transport::Channel};
+use tonic::{Request, transport::Channel};
 
 use crate::raft::{
-    AppendEntriesArgs, AppendEntriesReply, Raft, RequestVoteArgs, RequestVoteReply,
+    RequestVoteArgs,
     raft_config::RaftConfig,
     raft_proto::raft_client::RaftClient,
     raft_state::{RaftState, Role},
@@ -21,8 +21,8 @@ use crate::raft::{
 
 #[derive(Debug)]
 pub struct RaftNode {
-    config: RaftConfig,
-    state: Mutex<RaftState>,
+    pub config: RaftConfig,
+    pub state: Mutex<RaftState>,
     peer_clients: HashMap<u32, RaftClient<Channel>>,
     notify_election_vote: Arc<Notify>,
 }
@@ -149,101 +149,5 @@ impl RaftNode {
 
     async fn heartbeat(&self) {
         todo!("To be implemented")
-    }
-}
-
-#[tonic::async_trait]
-impl Raft for RaftNode {
-    async fn request_vote(
-        &self,
-        args: Request<RequestVoteArgs>,
-    ) -> Result<Response<RequestVoteReply>, Status> {
-        let mut reply = RequestVoteReply::default();
-        let args = args.into_inner();
-
-        let mut state = self.state.lock().await;
-        reply.term = state.term;
-
-        if args.term < state.term {
-            reply.vote_granted = false;
-            return Ok(Response::new(reply));
-        }
-
-        if args.term >= state.term {
-            state.become_follower(args.term);
-        }
-
-        match state.voted_for {
-            None => {
-                reply.vote_granted = true;
-                state.voted_for = Option::Some(args.candidate_id);
-                tracing::info!(
-                    "Raft node {}: I voted for {} in term {}.",
-                    self.config.me,
-                    args.candidate_id,
-                    state.term,
-                );
-            }
-            Some(id) if id == args.candidate_id => {
-                reply.vote_granted = true;
-                tracing::info!(
-                    "Raft node {}: I already voted for {} in term {}.",
-                    self.config.me,
-                    args.candidate_id,
-                    state.term,
-                );
-            }
-            Some(already_voted_for) => {
-                tracing::info!(
-                    "Raft node {}: I refused to vote for node {} in term {} because I already voted for {}.",
-                    self.config.me,
-                    args.candidate_id,
-                    state.term,
-                    already_voted_for,
-                );
-            }
-        }
-
-        //TODO: Check Log Completeness
-
-        Ok(Response::new(reply))
-    }
-
-    async fn append_entries(
-        &self,
-        args: Request<AppendEntriesArgs>,
-    ) -> Result<Response<AppendEntriesReply>, tonic::Status> {
-        let mut reply = AppendEntriesReply::default();
-        let args = args.into_inner();
-
-        let mut state = self.state.lock().await;
-        reply.term = state.term;
-
-        if (args.term > state.term) || (args.term == state.term && state.role != Role::LEADER) {
-            state.become_follower(args.term);
-        }
-
-        //TODO: Check Log Completeness
-
-        reply.success = false;
-
-        Ok(Response::new(reply))
-    }
-}
-
-#[tonic::async_trait]
-impl Raft for Arc<RaftNode> {
-    async fn request_vote(
-        &self,
-        args: Request<RequestVoteArgs>,
-    ) -> Result<Response<RequestVoteReply>, Status> {
-        self.as_ref().request_vote(args).await
-    }
-
-    async fn append_entries(
-        &self,
-        args: Request<AppendEntriesArgs>,
-    ) -> Result<Response<AppendEntriesReply>, tonic::Status> {
-        self.as_ref().append_entries(args).await
     }
 }

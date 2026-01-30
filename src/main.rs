@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use clap::Parser;
 use raft_db::raft::{
     raft_config::RaftConfig, raft_node::RaftNode, raft_proto::raft_server::RaftServer,
+    raft_service::RaftService,
 };
 use tonic::transport::Server;
 use tracing::Level;
@@ -27,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = raft_config.nodes[&args.id];
     let raft_node = Arc::new(RaftNode::from(raft_config));
     RaftNode::start_background_tasks(&raft_node);
-    let raft_server = RaftServer::new(raft_node);
+    let raft_server = RaftServer::new(RaftService::from(raft_node));
     tracing::info!("Starting server {} on port {:?}", args.id, addr);
     Server::builder()
         .add_service(raft_server)

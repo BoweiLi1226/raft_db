@@ -3,6 +3,7 @@ pub mod raft_proto {
 }
 pub mod raft_config;
 pub mod raft_node;
+pub mod raft_service;
 pub mod raft_state;
 
 pub use raft_proto::raft_server::Raft;
