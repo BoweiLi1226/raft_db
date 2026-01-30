@@ -73,6 +73,7 @@ impl Raft for RaftService {
 
         Ok(Response::new(reply))
     }
+
     async fn append_entries(
         &self,
         args: Request<AppendEntriesArgs>,

@@ -13,7 +13,7 @@ use tokio::{
 use tonic::{Request, transport::Channel};
 
 use crate::raft::{
-    RequestVoteArgs,
+    AppendEntriesArgs, RequestVoteArgs,
     raft_config::RaftConfig,
     raft_proto::raft_client::RaftClient,
     raft_state::{RaftState, Role},
@@ -148,6 +148,31 @@ impl RaftNode {
     }
 
     async fn heartbeat(&self) {
-        todo!("To be implemented")
+        let mut tasks = JoinSet::new();
+        for client in self.peer_clients.values() {
+            let args = {
+                let state = self.state.lock().await;
+                AppendEntriesArgs {
+                    term: state.term,
+                    leader_id: self.config.me,
+                    prev_log_index: 0,
+                    prev_log_term: 0,
+                    entries: Vec::new(),
+                    leader_commit: 0,
+                }
+            };
+            let request = Request::new(args);
+            let mut client = client.clone();
+            tasks.spawn(async move {
+                if let Ok(response) = client.append_entries(request).await {
+                    let _reply = response.into_inner();
+                    // TODO: Make sure to handle the case when node receives response with higher
+                    // term
+                }
+            });
+        }
+        time::timeout(Duration::from_millis(100), tasks.join_all())
+            .await
+            .unwrap();
     }
 }
