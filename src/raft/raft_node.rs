@@ -1,10 +1,9 @@
-use core::panic;
-use futures::FutureExt;
 use std::{
     collections::HashMap,
     sync::{Arc, atomic},
     time::Duration,
 };
+
 use tokio::{
     sync::{Mutex, Notify},
     task::JoinSet,
@@ -24,7 +23,6 @@ pub struct RaftNode {
     pub config: RaftConfig,
     pub state: Mutex<RaftState>,
     peer_clients: HashMap<u32, RaftClient<Channel>>,
-    notify_election_vote: Arc<Notify>,
 }
 
 impl From<RaftConfig> for RaftNode {
@@ -36,21 +34,20 @@ impl From<RaftConfig> for RaftNode {
             config: raft_config,
             state: Mutex::new(RaftState::with_self_and_peer_ids(me, peer_ids)),
             peer_clients,
-            notify_election_vote: Arc::new(Notify::new()),
         }
     }
 }
 
 impl RaftNode {
-    pub fn start_background_tasks(node: &Arc<Self>) {
-        let raft_node = Arc::clone(node);
+    pub fn start_background_tasks(node: Arc<Self>) {
+        let raft_node = Arc::clone(&node);
         tokio::spawn(async move { raft_node.election_ticker().await });
 
-        let raft_node = Arc::clone(node);
+        let raft_node = Arc::clone(&node);
         tokio::spawn(async move { raft_node.heartbeat_ticker().await });
     }
 
-    async fn election_ticker(&self) {
+    async fn election_ticker(self: Arc<Self>) {
         // TODO: Pending Improvement?
         // Right now if last_tick gets reset right after sleep starts,
         // should_elect would be false.
@@ -63,12 +60,12 @@ impl RaftNode {
                 state.role != Role::LEADER && state.timeout(timeout)
             };
             if should_elect {
-                self.election().await;
+                Arc::clone(&self).election().await;
             }
         }
     }
 
-    async fn election(&self) {
+    async fn election(self: Arc<Self>) {
         let (args, current_term) = {
             let mut state = self.state.lock().await;
             state.become_candidate();
@@ -89,8 +86,7 @@ impl RaftNode {
             )
         };
 
-        // consume the notification channel
-        self.notify_election_vote.notified().now_or_never();
+        let notify_on_vote = Arc::new(Notify::new());
 
         // voted for self
         let vote_obtained = Arc::new(atomic::AtomicU32::new(1));
@@ -102,26 +98,28 @@ impl RaftNode {
             let request = Request::new(args);
             let mut client = client.clone();
             let vote_obtained = Arc::clone(&vote_obtained);
-            let notify_election_vote = Arc::clone(&self.notify_election_vote);
+            let notify_on_vote = Arc::clone(&notify_on_vote);
+            let raft_node = Arc::clone(&self);
             tasks.spawn(async move {
                 if let Ok(response) = client.request_vote(request).await {
                     let reply = response.into_inner();
                     if reply.vote_granted {
                         let current_vote = vote_obtained.fetch_add(1, atomic::Ordering::SeqCst) + 1;
                         if current_vote > vote_needed {
-                            notify_election_vote.notify_one();
+                            notify_on_vote.notify_one();
+                        }
+                    } else {
+                        let mut state = raft_node.state.lock().await;
+                        if reply.term > state.term {
+                            state.become_follower(reply.term);
                         }
                     }
                 }
             });
         }
 
-        // TODO: Make sure to handle the case when node receives higher term when
-        // collecting votes
-        let sleep = time::sleep(Duration::from_millis(300));
-        tokio::pin!(sleep);
         tokio::select! {
-            _ = self.notify_election_vote.notified() => {
+            _ = notify_on_vote.notified() => {
                 let mut state = self.state.lock().await;
                 if state.term == current_term && state.role == Role::CANDIDATE {
                     state.become_leader();
@@ -129,12 +127,12 @@ impl RaftNode {
                     return;
                 }
             }
-            _ = &mut sleep => {}
+            _ = time::sleep(Duration::from_millis(300)) => {}
         }
         tasks.abort_all();
     }
 
-    async fn heartbeat_ticker(&self) {
+    async fn heartbeat_ticker(self: Arc<Self>) {
         loop {
             time::sleep(Duration::from_millis(100)).await;
             let should_send_heartbeat = {
@@ -142,12 +140,12 @@ impl RaftNode {
                 state.role == Role::LEADER
             };
             if should_send_heartbeat {
-                self.heartbeat().await;
+                Arc::clone(&self).heartbeat().await;
             }
         }
     }
 
-    async fn heartbeat(&self) {
+    async fn heartbeat(self: Arc<Self>) {
         let mut tasks = JoinSet::new();
         for client in self.peer_clients.values() {
             let args = {
@@ -163,16 +161,24 @@ impl RaftNode {
             };
             let request = Request::new(args);
             let mut client = client.clone();
+            let raft_node = Arc::clone(&self);
             tasks.spawn(async move {
                 if let Ok(response) = client.append_entries(request).await {
-                    let _reply = response.into_inner();
-                    // TODO: Make sure to handle the case when node receives response with higher
-                    // term
+                    let reply = response.into_inner();
+                    let mut state = raft_node.state.lock().await;
+                    if reply.term > state.term {
+                        state.become_follower(reply.term);
+                    }
                 }
             });
         }
         time::timeout(Duration::from_millis(100), tasks.join_all())
             .await
-            .unwrap();
+            .unwrap_or_else(|_| {
+                panic!(
+                    "Raft node {}: Error when waiting for result of heartbeat",
+                    self.config.me
+                )
+            });
     }
 }
