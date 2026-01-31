@@ -28,14 +28,18 @@ impl Raft for RaftService {
 
         let mut state = self.raft_node.state.lock().await;
         reply.term = state.term;
+        reply.vote_granted = false;
 
+        // reject vote if received request from node with lower term
         if args.term < state.term {
-            reply.vote_granted = false;
             return Ok(Response::new(reply));
+        } else {
+            state.become_follower(args.term);
         }
 
-        if args.term >= state.term {
-            state.become_follower(args.term);
+        // reject if log of the other node is not up to date
+        if !state.is_other_node_log_up_to_date(args.last_log_term, args.last_log_index) {
+            return Ok(Response::new(reply));
         }
 
         match state.voted_for {
@@ -69,8 +73,6 @@ impl Raft for RaftService {
             }
         }
 
-        //TODO: Check Log Completeness
-
         Ok(Response::new(reply))
     }
 
@@ -83,14 +85,13 @@ impl Raft for RaftService {
 
         let mut state = self.raft_node.state.lock().await;
         reply.term = state.term;
+        reply.success = false;
 
         if (args.term > state.term) || (args.term == state.term && state.role != Role::LEADER) {
             state.become_follower(args.term);
         }
 
         //TODO: Check Log Completeness
-
-        reply.success = false;
 
         Ok(Response::new(reply))
     }

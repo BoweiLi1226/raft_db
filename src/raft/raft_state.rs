@@ -102,4 +102,21 @@ impl RaftState {
             self.term
         );
     }
+
+    pub fn is_other_node_log_up_to_date(
+        &self,
+        last_log_term_other_node: u64,
+        last_log_index_other_node: u64,
+    ) -> bool {
+        let Some(last_log) = self.log.last() else {
+            panic!(
+                "Raft Node {}: I do not have any log which means I am not initialized in a correct way",
+                self.me
+            );
+        };
+
+        last_log_term_other_node > last_log.term
+            || (last_log_term_other_node == last_log.term
+                && last_log_index_other_node >= (self.log.len() - 1) as u64)
+    }
 }
