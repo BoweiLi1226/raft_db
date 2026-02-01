@@ -119,4 +119,43 @@ impl RaftState {
             || (last_log_term_other_node == last_log.term
                 && last_log_index_other_node >= (self.log.len() - 1) as u64)
     }
+
+    pub fn contains_prev_log(&self, prev_log_index: u64, prev_log_term: u64) -> bool {
+        if let Some(log) = self.log.get(prev_log_index as usize) {
+            prev_log_term == log.term
+        } else {
+            false
+        }
+    }
+
+    pub fn append_log(&mut self, prev_log_index: u64, log_entries: &[LogEntry]) {
+        let start_index = (prev_log_index + 1) as usize;
+        let mut index_to_append_from = 0;
+        let mut conflict_found = false;
+        for (idx, new_entry) in log_entries.iter().enumerate() {
+            let target_idx = start_index + idx;
+            if target_idx < self.log.len() {
+                if self.log[target_idx].term != new_entry.term {
+                    self.log.truncate(target_idx);
+                    index_to_append_from = idx;
+                    conflict_found = true;
+                    break;
+                }
+            } else {
+                index_to_append_from = idx;
+                conflict_found = true;
+                break;
+            }
+        }
+        if conflict_found {
+            self.log
+                .extend_from_slice(&log_entries[index_to_append_from..]);
+        }
+    }
+
+    pub fn update_commit(&mut self, leader_commit: u64) {
+        if leader_commit > self.commit_index {
+            self.commit_index = leader_commit.min((self.log.len() - 1) as u64);
+        }
+    }
 }
