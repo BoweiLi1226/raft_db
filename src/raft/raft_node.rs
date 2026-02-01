@@ -147,19 +147,40 @@ impl RaftNode {
 
     async fn heartbeat(self: Arc<Self>) {
         let mut tasks = JoinSet::new();
-        for client in self.peer_clients.values() {
-            let args = {
-                let state = self.state.lock().await;
-                AppendEntriesArgs {
-                    term: state.term,
-                    leader_id: self.config.me,
-                    prev_log_index: 0,
-                    prev_log_term: 0,
-                    entries: Vec::new(),
-                    leader_commit: 0,
-                }
+        let mut requests = {
+            let state = self.state.lock().await;
+            let Some(next_indices) = &state.next_indices else {
+                return; // Not leader any more
             };
-            let request = Request::new(args);
+            let mut requests = HashMap::with_capacity(next_indices.len());
+            for (&id, &start_index) in next_indices {
+                let prev_log_index = start_index - 1;
+                let prev_log_term = state.log[prev_log_index as usize].term;
+                let mut entries = Vec::with_capacity((prev_log_index + 1 - start_index) as usize);
+                entries.extend_from_slice(&state.log[(start_index as usize)..]);
+                requests.insert(
+                    id,
+                    Request::new(AppendEntriesArgs {
+                        term: state.term,
+                        leader_id: self.config.me,
+                        prev_log_index,
+                        prev_log_term,
+                        entries,
+                        leader_commit: state.commit_index,
+                    }),
+                );
+            }
+            requests
+        };
+        for (id, client) in &self.peer_clients {
+            let Some(request) = requests.remove(id) else {
+                tracing::error!(
+                    "Raft node {}: I didn't initialize append entries request properly for node {}",
+                    self.config.me,
+                    id
+                );
+                continue;
+            };
             let mut client = client.clone();
             let raft_node = Arc::clone(&self);
             tasks.spawn(async move {
@@ -172,13 +193,9 @@ impl RaftNode {
                 }
             });
         }
-        time::timeout(Duration::from_millis(100), tasks.join_all())
-            .await
-            .unwrap_or_else(|_| {
-                panic!(
-                    "Raft node {}: Error when waiting for result of heartbeat",
-                    self.config.me
-                )
-            });
+        let _ = time::timeout(Duration::from_millis(100), tasks.join_all()).await;
+
+        // TODO: Update next indices and match indices
+        // TODO: Update commit index
     }
 }

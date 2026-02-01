@@ -16,7 +16,7 @@ impl RaftConfig {
             .into_iter()
             .map(|(id, addr_str)| {
                 let addr = addr_str.parse::<SocketAddr>().unwrap_or_else(|_| {
-                    panic!("Raft node {} has invalid endpoint {}", id, addr_str);
+                    panic!("Raft node {}: I received invalid endpoint {}", id, addr_str);
                 });
                 (id, addr)
             })
