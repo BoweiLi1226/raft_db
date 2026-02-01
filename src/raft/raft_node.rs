@@ -5,14 +5,14 @@ use std::{
 };
 
 use tokio::{
-    sync::{Mutex, Notify},
+    sync::{Mutex, Notify, mpsc},
     task::JoinSet,
     time,
 };
 use tonic::{Request, transport::Channel};
 
 use crate::raft::{
-    AppendEntriesArgs, RequestVoteArgs,
+    AppendEntriesArgs, LogEntry, RequestVoteArgs,
     raft_config::RaftConfig,
     raft_proto::raft_client::RaftClient,
     raft_state::{RaftState, Role},
@@ -22,32 +22,76 @@ use crate::raft::{
 pub struct RaftNode {
     pub config: RaftConfig,
     pub state: Mutex<RaftState>,
+    pub log_tx: mpsc::Sender<LogEntry>,
     peer_clients: HashMap<u32, RaftClient<Channel>>,
 }
 
-impl From<RaftConfig> for RaftNode {
-    fn from(raft_config: RaftConfig) -> Self {
+impl RaftNode {
+    pub fn new(raft_config: RaftConfig) -> Arc<Self> {
         let peer_clients = raft_config.make_clients();
         let me = raft_config.me;
         let peer_ids: Vec<u32> = raft_config.nodes.iter().map(|(&id, _)| id).collect();
-        Self {
+        let (log_tx, log_rx) = mpsc::channel::<LogEntry>(15);
+
+        let raft_node = Arc::new(Self {
             config: raft_config,
             state: Mutex::new(RaftState::with_self_and_peer_ids(me, peer_ids)),
+            log_tx,
             peer_clients,
-        }
-    }
-}
+        });
 
-impl RaftNode {
-    pub fn start_background_tasks(node: Arc<Self>) {
-        let raft_node = Arc::clone(&node);
+        Arc::clone(&raft_node).start_background_tasks(log_rx);
+        raft_node
+    }
+
+    fn start_background_tasks(self: Arc<Self>, log_rx: mpsc::Receiver<LogEntry>) {
+        let raft_node = Arc::clone(&self);
         tokio::spawn(async move { raft_node.election_ticker().await });
 
-        let raft_node = Arc::clone(&node);
+        let raft_node = Arc::clone(&self);
         tokio::spawn(async move { raft_node.heartbeat_ticker().await });
+
+        let raft_node = Arc::clone(&self);
+        tokio::spawn(async move { raft_node.apply_ticker(log_rx).await });
     }
 
-    async fn election_ticker(self: Arc<Self>) {
+    async fn apply_ticker(self: Arc<Self>, log_rx: mpsc::Receiver<LogEntry>) -> ! {
+        let mut log_rx = log_rx;
+        loop {
+            let mut batch: Vec<LogEntry> = Vec::with_capacity(15);
+            // only awaken if we receive one log entry from channel
+            match log_rx.recv().await {
+                Some(log_entry) => batch.push(log_entry),
+                None => panic!("Raft node {}: My apply channel is closed", self.config.me),
+            }
+
+            // we wait for a total of 100 milliseconds or 20 messages
+            let sleep = time::sleep(Duration::from_millis(100));
+            tokio::pin!(sleep);
+            loop {
+                tokio::select! {
+                    _ = &mut sleep => { break; }
+                    msg = log_rx.recv() => {
+                        if let Some(msg) = msg {
+                            batch.push(msg);
+                            if batch.len() >= 20 {
+                                break;
+                            }
+                        } else {
+                            panic!("Raft node {}: My apply channel is closed", self.config.me);
+                        }
+                    }
+                }
+            }
+            Arc::clone(&self).apply(&batch).await;
+        }
+    }
+
+    async fn apply(self: Arc<Self>, to_apply: &[LogEntry]) {
+        todo!("To be implemented, remember to update last applied");
+    }
+
+    async fn election_ticker(self: Arc<Self>) -> ! {
         // TODO: Pending Improvement?
         // Right now if last_tick gets reset right after sleep starts,
         // should_elect would be false.
@@ -132,7 +176,7 @@ impl RaftNode {
         tasks.abort_all();
     }
 
-    async fn heartbeat_ticker(self: Arc<Self>) {
+    async fn heartbeat_ticker(self: Arc<Self>) -> ! {
         loop {
             time::sleep(Duration::from_millis(100)).await;
             let should_send_heartbeat = {
