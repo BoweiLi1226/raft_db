@@ -134,7 +134,7 @@ impl RaftNode {
 
         // voted for self
         let vote_obtained = Arc::new(atomic::AtomicU32::new(1));
-        let vote_needed = (self.config.nodes.len() / 2) as u32;
+        let vote_needed = (self.config.nodes.len() / 2 + 1) as u32;
 
         // rpc calls
         let mut tasks = JoinSet::new();
@@ -149,7 +149,7 @@ impl RaftNode {
                     let reply = response.into_inner();
                     if reply.vote_granted {
                         let current_vote = vote_obtained.fetch_add(1, atomic::Ordering::SeqCst) + 1;
-                        if current_vote > vote_needed {
+                        if current_vote >= vote_needed {
                             notify_on_vote.notify_one();
                         }
                     } else {
@@ -191,12 +191,16 @@ impl RaftNode {
 
     async fn heartbeat(self: Arc<Self>) {
         let mut tasks = JoinSet::new();
-        let mut requests = {
+        let (mut requests, target_index) = {
             let state = self.state.lock().await;
             let Some(next_indices) = &state.next_indices else {
                 return; // Not leader any more
             };
             let mut requests = HashMap::with_capacity(next_indices.len());
+            let target_index = (state.log.len() - 1) as u64;
+            if target_index == 0 {
+                return; // only dummy log is there
+            }
             for (&id, &start_index) in next_indices {
                 let prev_log_index = start_index - 1;
                 let prev_log_term = state.log[prev_log_index as usize].term;
@@ -214,10 +218,13 @@ impl RaftNode {
                     }),
                 );
             }
-            requests
+            (requests, target_index)
         };
-        for (id, client) in &self.peer_clients {
-            let Some(request) = requests.remove(id) else {
+        let number_of_success = Arc::new(atomic::AtomicU32::new(1));
+        let success_needed_for_commit = (self.config.nodes.len() / 2 + 1) as u32;
+        let notify_on_commit_update = Arc::new(Notify::new());
+        for (&id, client) in &self.peer_clients {
+            let Some(request) = requests.remove(&id) else {
                 tracing::error!(
                     "Raft node {}: I didn't initialize append entries request properly for node {}",
                     self.config.me,
@@ -226,6 +233,8 @@ impl RaftNode {
                 continue;
             };
             let mut client = client.clone();
+            let number_of_success = Arc::clone(&number_of_success);
+            let notify_on_commit_update = Arc::clone(&notify_on_commit_update);
             let raft_node = Arc::clone(&self);
             tasks.spawn(async move {
                 if let Ok(response) = client.append_entries(request).await {
@@ -234,12 +243,67 @@ impl RaftNode {
                     if reply.term > state.term {
                         state.become_follower(reply.term);
                     }
+
+                    let Some(match_indices) = state.match_indices.as_mut() else {
+                        return;
+                    };
+                    if reply.success {
+                        match_indices.insert(id, target_index);
+                    }
+
+                    let Some(next_indices) = state.next_indices.as_mut() else {
+                        return;
+                    };
+                    if reply.success {
+                        next_indices.insert(id, target_index + 1);
+                        let number_of_success =
+                            number_of_success.fetch_add(1, atomic::Ordering::SeqCst) + 1;
+                        if number_of_success >= success_needed_for_commit {
+                            notify_on_commit_update.notify_one();
+                        }
+                    } else {
+                        let next_index = next_indices[&id];
+                        if next_index > 1 {
+                            next_indices.insert(id, next_index - 1);
+                        }
+                    }
                 }
             });
         }
-        let _ = time::timeout(Duration::from_millis(100), tasks.join_all()).await;
+        tokio::select! {
+            _ = notify_on_commit_update.notified() => {
+                let to_apply = {
+                    let mut state = self.state.lock().await;
+                    let last_index = (state.log.len() - 1) as u64;
+                    let mut entries = vec![];
+                    if target_index > state.commit_index && target_index <= last_index && state.log[target_index as usize].term == state.term {
+                        state.commit_index = target_index;
+                        if state.commit_index > state.last_applied {
+                            let start = (state.last_applied + 1) as usize;
+                            let end = state.commit_index as usize;
+                            entries = state.log[start..=end].to_vec()
+                        }
+                    }
+                    entries
+                };
 
-        // TODO: Update next indices and match indices
-        // TODO: Update commit index
+                let mut logs_sent = 0;
+                for log in to_apply.into_iter() {
+                    let Ok(_) = self.log_tx.send(log).await else {
+                        tracing::error!(
+                            "Raft node {}: I failed to send log",
+                            self.config.me,
+                        );
+                        break;
+                    };
+                    logs_sent += 1;
+                }
+                if logs_sent > 0 {
+                    self.state.lock().await.last_applied += logs_sent;
+                }
+            }
+            _ = time::sleep(Duration::from_millis(100)) => {}
+        }
+        tasks.abort_all();
     }
 }

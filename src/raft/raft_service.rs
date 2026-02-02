@@ -98,22 +98,29 @@ impl Raft for RaftService {
         state.append_log(args.prev_log_index, &args.entries);
         state.update_commit(args.leader_commit);
 
+        // notify applier
+        let mut to_apply = vec![];
         if state.commit_index > state.last_applied {
-            for i in (state.last_applied + 1)..=state.commit_index {
-                let Ok(_) = self
-                    .raft_node
-                    .log_tx
-                    .send(state.log[i as usize].clone())
-                    .await
-                else {
-                    tracing::error!(
-                        "Raft node {}: I failed to send log at index {}",
-                        self.raft_node.config.me,
-                        i
-                    );
-                    break;
-                };
-            }
+            let start = (state.last_applied + 1) as usize;
+            let end = state.commit_index as usize;
+            to_apply = state.log[start..=end].to_vec();
+        }
+
+        drop(state);
+
+        let mut logs_sent = 0;
+        for log in to_apply.into_iter() {
+            let Ok(_) = self.raft_node.log_tx.send(log).await else {
+                tracing::error!(
+                    "Raft node {}: I failed to send log",
+                    self.raft_node.config.me,
+                );
+                break;
+            };
+            logs_sent += 1;
+        }
+        if logs_sent > 0 {
+            self.raft_node.state.lock().await.last_applied += logs_sent;
         }
 
         reply.success = true;
