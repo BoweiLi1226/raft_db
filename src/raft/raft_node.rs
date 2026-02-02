@@ -12,7 +12,7 @@ use tokio::{
 use tonic::{Request, transport::Channel};
 
 use crate::raft::{
-    AppendEntriesArgs, LogEntry, RequestVoteArgs,
+    AppendEntriesArgs, AppendEntriesReply, LogEntry, RequestVoteArgs, RequestVoteReply,
     raft_config::RaftConfig,
     raft_proto::raft_client::RaftClient,
     raft_state::{RaftState, Role},
@@ -305,5 +305,102 @@ impl RaftNode {
             _ = time::sleep(Duration::from_millis(100)) => {}
         }
         tasks.abort_all();
+    }
+
+    pub async fn handle_request_vote(&self, args: RequestVoteArgs) -> RequestVoteReply {
+        let mut reply = RequestVoteReply::default();
+        let mut state = self.state.lock().await;
+        reply.term = state.term;
+        reply.vote_granted = false;
+        // reject vote if received request from node with lower term
+        if args.term < state.term {
+            return reply;
+        } else {
+            state.become_follower(args.term);
+        }
+        // reject if log of the other node is not up to date
+        if !state.is_other_node_log_up_to_date(args.last_log_term, args.last_log_index) {
+            return reply;
+        }
+        match state.voted_for {
+            None => {
+                reply.vote_granted = true;
+                state.voted_for = Option::Some(args.candidate_id);
+                tracing::info!(
+                    "Raft node {}: I voted for {} in term {}.",
+                    self.config.me,
+                    args.candidate_id,
+                    state.term,
+                );
+            }
+            Some(id) if id == args.candidate_id => {
+                reply.vote_granted = true;
+                tracing::info!(
+                    "Raft node {}: I already voted for {} in term {}.",
+                    self.config.me,
+                    args.candidate_id,
+                    state.term,
+                );
+            }
+            Some(already_voted_for) => {
+                tracing::info!(
+                    "Raft node {}: I refused to vote for node {} in term {} because I already voted for {}.",
+                    self.config.me,
+                    args.candidate_id,
+                    state.term,
+                    already_voted_for,
+                );
+            }
+        }
+        reply
+    }
+
+    pub async fn handle_append_entries(&self, args: AppendEntriesArgs) -> AppendEntriesReply {
+        let mut reply = AppendEntriesReply::default();
+        let mut state = self.state.lock().await;
+        reply.term = state.term;
+        reply.success = false;
+
+        // heartbeat comes from invalid leader
+        if args.term < state.term {
+            return reply;
+        }
+
+        // heartbeat comes from valid leader from now on
+        state.reset_tick();
+        if (args.term > state.term) || (args.term == state.term && state.role != Role::FOLLOWER) {
+            state.become_follower(args.term);
+        }
+
+        if !state.contains_prev_log(args.prev_log_index, args.prev_log_term) {
+            return reply;
+        }
+        state.append_log(args.prev_log_index, &args.entries);
+        state.update_commit(args.leader_commit);
+
+        // notify applier
+        let mut to_apply = vec![];
+        if state.commit_index > state.last_applied {
+            let start = (state.last_applied + 1) as usize;
+            let end = state.commit_index as usize;
+            to_apply = state.log[start..=end].to_vec();
+        }
+
+        drop(state);
+
+        let mut logs_sent = 0;
+        for log in to_apply.into_iter() {
+            let Ok(_) = self.log_tx.send(log).await else {
+                tracing::error!("Raft node {}: I failed to send log", self.config.me,);
+                break;
+            };
+            logs_sent += 1;
+        }
+        if logs_sent > 0 {
+            self.state.lock().await.last_applied += logs_sent;
+        }
+
+        reply.success = true;
+        reply
     }
 }
