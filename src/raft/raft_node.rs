@@ -198,9 +198,6 @@ impl RaftNode {
             };
             let mut requests = HashMap::with_capacity(next_indices.len());
             let target_index = (state.log.len() - 1) as u64;
-            if target_index == 0 {
-                return; // only dummy log is there
-            }
             for (&id, &start_index) in next_indices {
                 let prev_log_index = start_index - 1;
                 let prev_log_term = state.log[prev_log_index as usize].term;
