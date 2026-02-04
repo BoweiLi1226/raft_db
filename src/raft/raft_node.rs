@@ -44,6 +44,11 @@ impl RaftNode {
         raft_node
     }
 
+    pub async fn get_state(self: Arc<Self>) -> (Role, u32, u64) {
+        let state = self.state.lock().await;
+        (state.role, self.config.me, state.term)
+    }
+
     fn start_background_tasks(self: Arc<Self>, log_rx: mpsc::Receiver<LogEntry>) {
         let raft_node = Arc::clone(&self);
         tokio::spawn(async move { raft_node.election_ticker().await });
@@ -88,7 +93,7 @@ impl RaftNode {
     }
 
     async fn apply(self: Arc<Self>, to_apply: &[LogEntry]) {
-        todo!("To be implemented, remember to update last applied");
+        todo!("To be implemented");
     }
 
     async fn election_ticker(self: Arc<Self>) -> ! {

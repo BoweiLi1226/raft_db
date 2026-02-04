@@ -4,7 +4,7 @@ use tokio::time::Instant;
 
 use crate::raft::LogEntry;
 
-#[derive(Default, PartialEq, Eq, Debug, Clone)]
+#[derive(Default, PartialEq, Eq, Debug, Clone, Copy)]
 pub enum Role {
     #[default]
     FOLLOWER,
