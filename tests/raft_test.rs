@@ -4,18 +4,23 @@ use raft_db::raft::{
     raft_config::RaftConfig, raft_node::RaftNode, raft_proto::raft_server::RaftServer,
     raft_service::RaftService, raft_state::Role,
 };
-use tokio::time;
+use tokio::{sync, time};
 use tonic::transport::Server;
 use tracing::Level;
 
 const BASE_PORT: u32 = 5000;
+const MAX_ATTEMPTS: u32 = 10;
 
 struct TestRaftCluster {
     raft_nodes: HashMap<u32, Arc<RaftNode>>,
+    shutdown_signals: HashMap<u32, sync::oneshot::Sender<()>>,
 }
 
 impl TestRaftCluster {
-    pub fn new(cluster_size: usize) -> Self {
+    pub fn setup(cluster_size: usize) -> Self {
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(Level::INFO)
+            .try_init();
         if cluster_size <= 3 || cluster_size >= 21 {
             panic!("Cluster size needs to be between 3 and 21");
         }
@@ -23,30 +28,81 @@ impl TestRaftCluster {
         for id in 1..=cluster_size {
             raw_endpoints.insert(id as u32, format!("127.0.0.1:{}", id as u32 + BASE_PORT));
         }
+
         let mut raft_nodes: HashMap<u32, Arc<RaftNode>> = HashMap::with_capacity(cluster_size);
+        let mut shutdown_signals: HashMap<u32, sync::oneshot::Sender<()>> =
+            HashMap::with_capacity(cluster_size);
+
         for id in 1..=cluster_size {
             let raft_config = RaftConfig::new(id as u32, raw_endpoints.clone());
             let addr = raft_config.nodes[&(id as u32)];
             let raft_node = RaftNode::new(raft_config);
             let node = Arc::clone(&raft_node);
             let raft_server = RaftServer::new(RaftService::from(node));
-            tokio::spawn(
-                async move { Server::builder().add_service(raft_server).serve(addr).await },
-            );
+            let (tx, rx) = sync::oneshot::channel();
+            shutdown_signals.insert(id as u32, tx);
+
+            tokio::spawn(async move {
+                let server = Server::builder()
+                    .add_service(raft_server)
+                    .serve_with_shutdown(addr, async {
+                        let _ = rx.await;
+                    })
+                    .await;
+                if server.is_err() {
+                    panic!("Raft node {id}: I cannot start server");
+                }
+            });
             raft_nodes.insert(id as u32, raft_node);
         }
-        Self { raft_nodes }
+        Self {
+            raft_nodes,
+            shutdown_signals,
+        }
+    }
+
+    pub fn shutdown_node(&mut self, id: u32) {
+        if let Some(tx) = self.shutdown_signals.remove(&id) {
+            let _ = tx.send(());
+        }
     }
 }
 
 #[tokio::test]
 async fn test_initial_election() {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+    let cluster = TestRaftCluster::setup(5);
 
-    let cluster = TestRaftCluster::new(5);
+    let Ok((first_leader_id, _)) = wait_for_leader(&cluster).await else {
+        panic!("No leader elected for Raft cluster");
+    };
 
-    loop {
-        time::sleep(Duration::from_millis(100)).await;
+    time::sleep(Duration::from_millis(600)).await;
+
+    let Ok((second_leader_id, _)) = wait_for_leader(&cluster).await else {
+        panic!("No leader elected for Raft cluster");
+    };
+    assert_eq!(first_leader_id, second_leader_id);
+}
+
+#[tokio::test]
+async fn test_election_after_leader_down() {
+    let mut cluster = TestRaftCluster::setup(5);
+
+    let Ok((leader_id, _)) = wait_for_leader(&cluster).await else {
+        panic!("No leader elected for Raft cluster");
+    };
+
+    cluster.shutdown_node(leader_id);
+
+    if let Err(error) = wait_for_leader(&cluster).await {
+        panic!("{error}");
+    }
+}
+
+async fn wait_for_leader(cluster: &TestRaftCluster) -> Result<(u32, u64), &'static str> {
+    let mut retry = 0;
+    while retry < MAX_ATTEMPTS {
+        time::sleep(Duration::from_millis(300)).await;
         let mut leader_count = 0;
         let mut leader_id = 0;
         let mut leader_term = 0;
@@ -66,15 +122,9 @@ async fn test_initial_election() {
                 leader_id,
                 leader_term
             );
-            time::sleep(Duration::from_millis(300)).await;
-            let (role, id, term) = cluster.raft_nodes[&leader_id].clone().get_state().await;
-            assert!(role == Role::LEADER && id == leader_id && term == leader_term);
-            tracing::info!(
-                "Raft node {} remains leader at term {}",
-                leader_id,
-                leader_term
-            );
-            break;
+            return Ok((leader_id, leader_term));
         }
+        retry += 1;
     }
+    Err("Timeout waiting for a leader")
 }
