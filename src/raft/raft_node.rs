@@ -11,11 +11,14 @@ use tokio::{
 };
 use tonic::{Request, transport::Channel};
 
-use crate::raft::{
-    AppendEntriesArgs, AppendEntriesReply, LogEntry, RequestVoteArgs, RequestVoteReply,
-    raft_config::RaftConfig,
-    raft_proto::raft_client::RaftClient,
-    raft_state::{RaftState, Role},
+use crate::{
+    raft::{
+        AppendEntriesArgs, AppendEntriesReply, LogEntry, RequestVoteArgs, RequestVoteReply,
+        raft_config::RaftConfig,
+        raft_proto::raft_client::RaftClient,
+        raft_state::{RaftState, Role},
+    },
+    storage::SharedKVStore,
 };
 
 #[derive(Debug)]
@@ -23,6 +26,7 @@ pub struct RaftNode {
     pub config: RaftConfig,
     pub state: Mutex<RaftState>,
     pub log_tx: mpsc::Sender<LogEntry>,
+    data: SharedKVStore,
     peer_clients: HashMap<u32, RaftClient<Channel>>,
 }
 
@@ -37,16 +41,12 @@ impl RaftNode {
             config: raft_config,
             state: Mutex::new(RaftState::with_self_and_peer_ids(me, peer_ids)),
             log_tx,
+            data: SharedKVStore::new(),
             peer_clients,
         });
 
         Arc::clone(&raft_node).start_background_tasks(log_rx);
         raft_node
-    }
-
-    pub async fn get_state(self: Arc<Self>) -> (Role, u32, u64) {
-        let state = self.state.lock().await;
-        (state.role, self.config.me, state.term)
     }
 
     fn start_background_tasks(self: Arc<Self>, log_rx: mpsc::Receiver<LogEntry>) {

@@ -108,7 +108,7 @@ async fn wait_for_leader(cluster: &TestRaftCluster) -> Result<(u32, u64), &'stat
         let mut leader_term = 0;
         for node in cluster.raft_nodes.values() {
             let node = Arc::clone(node);
-            let (role, id, term) = node.get_state().await;
+            let (role, id, term) = get_state(node).await;
             if role == Role::LEADER {
                 leader_id = id;
                 leader_term = term;
@@ -127,4 +127,9 @@ async fn wait_for_leader(cluster: &TestRaftCluster) -> Result<(u32, u64), &'stat
         retry += 1;
     }
     Err("Timeout waiting for a leader")
+}
+
+async fn get_state(raft_node: Arc<RaftNode>) -> (Role, u32, u64) {
+    let state = raft_node.state.lock().await;
+    (state.role, raft_node.config.me, state.term)
 }
