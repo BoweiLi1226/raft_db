@@ -18,7 +18,7 @@ use crate::{
         raft_proto::raft_client::RaftClient,
         raft_state::{RaftState, Role},
     },
-    storage::SharedKVStore,
+    storage::shared_kv_store::SharedKVStore,
 };
 
 #[derive(Debug)]
