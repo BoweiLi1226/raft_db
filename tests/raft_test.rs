@@ -36,7 +36,7 @@ impl TestRaftCluster {
         for id in 1..=cluster_size {
             let raft_config = RaftConfig::new(id as u32, raw_endpoints.clone());
             let addr = raft_config.nodes[&(id as u32)];
-            let raft_node = RaftNode::new(raft_config);
+            let raft_node = RaftNode::new(Arc::new(raft_config));
             let node = Arc::clone(&raft_node);
             let raft_server = RaftServer::new(RaftService::from(node));
             let (tx, rx) = sync::oneshot::channel();

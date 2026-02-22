@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use clap::Parser;
 use raft_db::raft::{
@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let raft_config = RaftConfig::new(args.id, endpoints);
     let addr = raft_config.nodes[&args.id];
-    let raft_node = RaftNode::new(raft_config);
+    let raft_node = RaftNode::new(Arc::new(raft_config));
     let raft_server = RaftServer::new(RaftService::from(raft_node));
     tracing::info!("Starting server {} on port {:?}", args.id, addr);
     Server::builder()

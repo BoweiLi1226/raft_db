@@ -23,7 +23,7 @@ use crate::{
 
 #[derive(Debug)]
 pub struct RaftNode {
-    pub config: RaftConfig,
+    pub config: Arc<RaftConfig>,
     pub state: Mutex<RaftState>,
     pub log_tx: mpsc::Sender<LogEntry>,
     data: SharedKVStore,
@@ -31,15 +31,13 @@ pub struct RaftNode {
 }
 
 impl RaftNode {
-    pub fn new(raft_config: RaftConfig) -> Arc<Self> {
+    pub fn new(raft_config: Arc<RaftConfig>) -> Arc<Self> {
         let peer_clients = raft_config.make_clients();
-        let me = raft_config.me;
-        let peer_ids: Vec<u32> = raft_config.nodes.iter().map(|(&id, _)| id).collect();
         let (log_tx, log_rx) = mpsc::channel::<LogEntry>(15);
 
         let raft_node = Arc::new(Self {
-            config: raft_config,
-            state: Mutex::new(RaftState::with_self_and_peer_ids(me, peer_ids)),
+            config: Arc::clone(&raft_config),
+            state: Mutex::new(RaftState::new(Arc::clone(&raft_config))),
             log_tx,
             data: SharedKVStore::new(),
             peer_clients,

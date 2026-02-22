@@ -36,4 +36,12 @@ impl RaftConfig {
             })
             .collect()
     }
+
+    pub fn get_number_of_nodes(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn get_peer_ids(&self) -> Vec<u32> {
+        self.nodes.keys().copied().collect()
+    }
 }

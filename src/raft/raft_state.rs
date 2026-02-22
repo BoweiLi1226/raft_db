@@ -1,8 +1,8 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::time::Instant;
 
-use crate::raft::LogEntry;
+use crate::raft::{LogEntry, raft_config::RaftConfig};
 
 #[derive(Default, PartialEq, Eq, Debug, Clone, Copy)]
 pub enum Role {
@@ -24,12 +24,11 @@ pub struct RaftState {
     pub role: Role,
     pub last_tick: Instant,
 
-    me: u32,
-    peer_ids: Vec<u32>,
+    raft_config: Arc<RaftConfig>,
 }
 
 impl RaftState {
-    pub fn with_self_and_peer_ids(me: u32, peer_ids: Vec<u32>) -> Self {
+    pub fn new(raft_config: Arc<RaftConfig>) -> Self {
         Self {
             term: 0,
             voted_for: None,
@@ -43,9 +42,7 @@ impl RaftState {
             match_indices: None,
             role: Role::FOLLOWER,
             last_tick: Instant::now(),
-
-            me,
-            peer_ids,
+            raft_config,
         }
     }
 
@@ -73,24 +70,24 @@ impl RaftState {
     pub fn become_candidate(&mut self) {
         self.role = Role::CANDIDATE;
         self.term += 1;
-        self.voted_for = Some(self.me);
+        self.voted_for = Some(self.raft_config.me);
         self.match_indices = None;
         self.next_indices = None;
         self.reset_tick();
         tracing::info!(
             "Raft node {}: I started election at term {}",
-            self.me,
+            self.raft_config.me,
             self.term
         );
     }
 
     pub fn become_leader(&mut self) {
         self.role = Role::LEADER;
-        let cluster_size = self.peer_ids.len() + 1;
+        let cluster_size = self.raft_config.get_number_of_nodes();
         let log_size = self.log.len() as u64;
         let mut next_indices_map = HashMap::with_capacity(cluster_size);
         let mut match_indices_map = HashMap::with_capacity(cluster_size);
-        for &id in &self.peer_ids {
+        for &id in &self.raft_config.get_peer_ids() {
             next_indices_map.insert(id, log_size);
             match_indices_map.insert(id, 0);
         }
@@ -98,7 +95,7 @@ impl RaftState {
         self.match_indices = Some(match_indices_map);
         tracing::info!(
             "Raft node {}: I won the election and become leader at term {}",
-            self.me,
+            self.raft_config.me,
             self.term
         );
     }
@@ -111,7 +108,7 @@ impl RaftState {
         let Some(last_log) = self.log.last() else {
             panic!(
                 "Raft Node {}: I do not have any log which means I am not initialized in a correct way",
-                self.me
+                self.raft_config.me,
             );
         };
 
