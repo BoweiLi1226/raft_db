@@ -10,3 +10,4 @@ pub use raft_proto::raft_server::Raft;
 pub use raft_proto::{
     AppendEntriesArgs, AppendEntriesReply, LogEntry, RequestVoteArgs, RequestVoteReply,
 };
+
