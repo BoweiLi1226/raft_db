@@ -1,8 +1,11 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use raft_db::raft::{
-    raft_config::RaftConfig, raft_node::RaftNode, raft_proto::raft_server::RaftServer,
-    raft_service::RaftService, raft_state::Role,
+use raft_db::{
+    raft::{
+        raft_config::RaftConfig, raft_node::RaftNode, raft_proto::raft_server::RaftServer,
+        raft_service::RaftService, raft_state::Role,
+    },
+    storage::shared_kv_store::SharedKVStore,
 };
 use tokio::{sync, time};
 use tonic::transport::Server;
@@ -12,7 +15,7 @@ const BASE_PORT: u32 = 5000;
 const MAX_ATTEMPTS: u32 = 10;
 
 struct TestRaftCluster {
-    raft_nodes: HashMap<u32, Arc<RaftNode>>,
+    raft_nodes: HashMap<u32, Arc<RaftNode<SharedKVStore>>>,
     shutdown_signals: HashMap<u32, sync::oneshot::Sender<()>>,
 }
 
@@ -29,14 +32,16 @@ impl TestRaftCluster {
             raw_endpoints.insert(id as u32, format!("127.0.0.1:{}", id as u32 + BASE_PORT));
         }
 
-        let mut raft_nodes: HashMap<u32, Arc<RaftNode>> = HashMap::with_capacity(cluster_size);
+        let mut raft_nodes: HashMap<u32, Arc<RaftNode<SharedKVStore>>> =
+            HashMap::with_capacity(cluster_size);
         let mut shutdown_signals: HashMap<u32, sync::oneshot::Sender<()>> =
             HashMap::with_capacity(cluster_size);
 
         for id in 1..=cluster_size {
             let raft_config = RaftConfig::new(id as u32, raw_endpoints.clone());
             let addr = raft_config.nodes[&(id as u32)];
-            let raft_node = RaftNode::new(Arc::new(raft_config));
+            let raft_node =
+                RaftNode::<SharedKVStore>::new(Arc::new(raft_config), SharedKVStore::new());
             let node = Arc::clone(&raft_node);
             let raft_server = RaftServer::new(RaftService::from(node));
             let (tx, rx) = sync::oneshot::channel();
@@ -129,7 +134,7 @@ async fn wait_for_leader(cluster: &TestRaftCluster) -> anyhow::Result<(u32, u64)
     Err(anyhow::anyhow!("Timeout waiting for a leader"))
 }
 
-async fn get_state(raft_node: Arc<RaftNode>) -> (Role, u32, u64) {
+async fn get_state(raft_node: Arc<RaftNode<SharedKVStore>>) -> (Role, u32, u64) {
     let state = raft_node.state.lock().await;
     (state.role, raft_node.config.me, state.term)
 }

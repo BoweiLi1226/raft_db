@@ -18,20 +18,20 @@ use crate::{
         raft_proto::raft_client::RaftClient,
         raft_state::{RaftState, Role},
     },
-    storage::shared_kv_store::SharedKVStore,
+    state_machine::StateMachine,
 };
 
 #[derive(Debug)]
-pub struct RaftNode {
+pub struct RaftNode<T: StateMachine> {
     pub config: Arc<RaftConfig>,
     pub state: Mutex<RaftState>,
     pub log_tx: mpsc::Sender<LogEntry>,
-    data: SharedKVStore,
     peer_clients: HashMap<u32, RaftClient<Channel>>,
+    state_machine: T,
 }
 
-impl RaftNode {
-    pub fn new(raft_config: Arc<RaftConfig>) -> Arc<Self> {
+impl<T: StateMachine> RaftNode<T> {
+    pub fn new(raft_config: Arc<RaftConfig>, state_machine: T) -> Arc<Self> {
         let peer_clients = raft_config.make_clients();
         let (log_tx, log_rx) = mpsc::channel::<LogEntry>(15);
 
@@ -39,7 +39,7 @@ impl RaftNode {
             config: Arc::clone(&raft_config),
             state: Mutex::new(RaftState::new(Arc::clone(&raft_config))),
             log_tx,
-            data: SharedKVStore::new(),
+            state_machine,
             peer_clients,
         });
 

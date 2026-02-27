@@ -749,6 +749,7 @@ name = "raft_db"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "prost",
  "rand",

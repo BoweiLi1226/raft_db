@@ -5,6 +5,7 @@ use raft_db::raft::{
     raft_config::RaftConfig, raft_node::RaftNode, raft_proto::raft_server::RaftServer,
     raft_service::RaftService,
 };
+use raft_db::storage::shared_kv_store::SharedKVStore;
 use tonic::transport::Server;
 use tracing::Level;
 
@@ -26,7 +27,8 @@ async fn main() -> anyhow::Result<()> {
     }
     let raft_config = RaftConfig::new(args.id, endpoints);
     let addr = raft_config.nodes[&args.id];
-    let raft_node = RaftNode::new(Arc::new(raft_config));
+    let shared_kv_store = SharedKVStore::new();
+    let raft_node = RaftNode::<SharedKVStore>::new(Arc::new(raft_config), shared_kv_store);
     let raft_server = RaftServer::new(RaftService::from(raft_node));
     tracing::info!("Starting server {} on port {:?}", args.id, addr);
     Server::builder()

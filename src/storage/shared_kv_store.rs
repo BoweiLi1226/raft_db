@@ -1,8 +1,12 @@
+use anyhow::Context;
 use tokio::sync::RwLock;
 
-use crate::storage::{
-    kv_store::KVStore,
-    utils::{Command, CommandError, CommandResponse},
+use crate::{
+    state_machine::StateMachine,
+    storage::{
+        kv_store::KVStore,
+        utils::{Command, CommandResponse},
+    },
 };
 
 #[derive(Debug, Default)]
@@ -17,7 +21,7 @@ impl SharedKVStore {
         }
     }
 
-    pub async fn process(&self, command: Command) -> anyhow::Result<CommandResponse, CommandError> {
+    async fn process(&self, command: Command) -> anyhow::Result<CommandResponse> {
         match command {
             Command::PUT { key, value } => self.put(key, value).await,
             Command::GET { key } => self.get(&key).await,
@@ -25,23 +29,28 @@ impl SharedKVStore {
         }
     }
 
-    pub async fn put(
-        &self,
-        key: String,
-        value: String,
-    ) -> anyhow::Result<CommandResponse, CommandError> {
+    async fn put(&self, key: String, value: String) -> anyhow::Result<CommandResponse> {
         let mut guard = self.data.write().await;
         guard.put(key, value)
     }
 
-    pub async fn get(&self, key: &str) -> anyhow::Result<CommandResponse, CommandError> {
+    async fn get(&self, key: &str) -> anyhow::Result<CommandResponse> {
         let guard = self.data.read().await;
         guard.get(key)
     }
 
-    pub async fn delete(&self, key: &str) -> anyhow::Result<CommandResponse, CommandError> {
+    async fn delete(&self, key: &str) -> anyhow::Result<CommandResponse> {
         let mut guard = self.data.write().await;
         guard.delete(key)
+    }
+}
+
+#[async_trait::async_trait]
+impl StateMachine for SharedKVStore {
+    async fn apply(&mut self, command: &[u8]) -> anyhow::Result<Vec<u8>> {
+        let command: Command = serde_json::from_slice(command)?;
+        let response = self.process(command).await?;
+        serde_json::to_vec(&response).context("Failed to serialize response")
     }
 }
 

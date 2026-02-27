@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::storage::utils::{CommandError, CommandResponse};
+use crate::storage::utils::CommandResponse;
 
 #[derive(Debug, Default)]
 pub struct KVStore {
@@ -14,24 +14,20 @@ impl KVStore {
         }
     }
 
-    pub fn put(
-        &mut self,
-        key: String,
-        value: String,
-    ) -> anyhow::Result<CommandResponse, CommandError> {
+    pub fn put(&mut self, key: String, value: String) -> anyhow::Result<CommandResponse> {
         self.data.insert(key, value);
         Ok(CommandResponse { value: None })
     }
 
-    pub fn get(&self, key: &str) -> anyhow::Result<CommandResponse, CommandError> {
+    pub fn get(&self, key: &str) -> anyhow::Result<CommandResponse> {
         self.data
             .get(key)
             .cloned()
             .map(|value| CommandResponse { value: Some(value) })
-            .ok_or(CommandError::KeyDoesNotExist)
+            .ok_or(anyhow::anyhow!("Key {key} does not exist"))
     }
 
-    pub fn delete(&mut self, key: &str) -> anyhow::Result<CommandResponse, CommandError> {
+    pub fn delete(&mut self, key: &str) -> anyhow::Result<CommandResponse> {
         Ok(CommandResponse {
             value: self.data.remove(key),
         })

@@ -2,23 +2,26 @@ use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
 
-use crate::raft::{
-    AppendEntriesArgs, AppendEntriesReply, Raft, RequestVoteArgs, RequestVoteReply,
-    raft_node::RaftNode,
+use crate::{
+    raft::{
+        AppendEntriesArgs, AppendEntriesReply, Raft, RequestVoteArgs, RequestVoteReply,
+        raft_node::RaftNode,
+    },
+    state_machine::StateMachine,
 };
 
-pub struct RaftService {
-    raft_node: Arc<RaftNode>,
+pub struct RaftService<T: StateMachine> {
+    raft_node: Arc<RaftNode<T>>,
 }
 
-impl From<Arc<RaftNode>> for RaftService {
-    fn from(raft_node: Arc<RaftNode>) -> Self {
+impl<T: StateMachine> From<Arc<RaftNode<T>>> for RaftService<T> {
+    fn from(raft_node: Arc<RaftNode<T>>) -> Self {
         Self { raft_node }
     }
 }
 
 #[tonic::async_trait]
-impl Raft for RaftService {
+impl<T: StateMachine> Raft for RaftService<T> {
     async fn request_vote(
         &self,
         args: Request<RequestVoteArgs>,

@@ -1,5 +1,4 @@
-// TODO: this should be used by raft node
-// TODO: shared kv store should implement this
-trait StateMachine {
-    fn apply(&mut self, command: &[u8]) -> anyhow::Result<Vec<u8>>;
+#[async_trait::async_trait]
+pub trait StateMachine: Send + Sync + 'static {
+    async fn apply(&mut self, command: &[u8]) -> anyhow::Result<Vec<u8>>;
 }

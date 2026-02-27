@@ -7,12 +7,7 @@ pub enum Command {
     DELETE { key: String },
 }
 
-#[derive(Debug)]
+#[derive(Deserialize, Serialize, Debug)]
 pub struct CommandResponse {
     pub value: Option<String>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum CommandError {
-    KeyDoesNotExist,
 }
