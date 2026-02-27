@@ -17,7 +17,7 @@ impl SharedKVStore {
         }
     }
 
-    pub async fn process(&self, command: Command) -> Result<CommandResponse, CommandError> {
+    pub async fn process(&self, command: Command) -> anyhow::Result<CommandResponse, CommandError> {
         match command {
             Command::PUT { key, value } => self.put(key, value).await,
             Command::GET { key } => self.get(&key).await,
@@ -25,17 +25,21 @@ impl SharedKVStore {
         }
     }
 
-    pub async fn put(&self, key: String, value: String) -> Result<CommandResponse, CommandError> {
+    pub async fn put(
+        &self,
+        key: String,
+        value: String,
+    ) -> anyhow::Result<CommandResponse, CommandError> {
         let mut guard = self.data.write().await;
         guard.put(key, value)
     }
 
-    pub async fn get(&self, key: &str) -> Result<CommandResponse, CommandError> {
+    pub async fn get(&self, key: &str) -> anyhow::Result<CommandResponse, CommandError> {
         let guard = self.data.read().await;
         guard.get(key)
     }
 
-    pub async fn delete(&self, key: &str) -> Result<CommandResponse, CommandError> {
+    pub async fn delete(&self, key: &str) -> anyhow::Result<CommandResponse, CommandError> {
         let mut guard = self.data.write().await;
         guard.delete(key)
     }
@@ -79,4 +83,3 @@ mod tests {
         }
     }
 }
-

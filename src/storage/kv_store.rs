@@ -14,12 +14,16 @@ impl KVStore {
         }
     }
 
-    pub fn put(&mut self, key: String, value: String) -> Result<CommandResponse, CommandError> {
+    pub fn put(
+        &mut self,
+        key: String,
+        value: String,
+    ) -> anyhow::Result<CommandResponse, CommandError> {
         self.data.insert(key, value);
         Ok(CommandResponse { value: None })
     }
 
-    pub fn get(&self, key: &str) -> Result<CommandResponse, CommandError> {
+    pub fn get(&self, key: &str) -> anyhow::Result<CommandResponse, CommandError> {
         self.data
             .get(key)
             .cloned()
@@ -27,10 +31,9 @@ impl KVStore {
             .ok_or(CommandError::KeyDoesNotExist)
     }
 
-    pub fn delete(&mut self, key: &str) -> Result<CommandResponse, CommandError> {
+    pub fn delete(&mut self, key: &str) -> anyhow::Result<CommandResponse, CommandError> {
         Ok(CommandResponse {
             value: self.data.remove(key),
         })
     }
 }
-

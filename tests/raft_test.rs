@@ -99,7 +99,7 @@ async fn test_election_after_leader_down() {
     }
 }
 
-async fn wait_for_leader(cluster: &TestRaftCluster) -> Result<(u32, u64), &'static str> {
+async fn wait_for_leader(cluster: &TestRaftCluster) -> anyhow::Result<(u32, u64)> {
     let mut retry = 0;
     while retry < MAX_ATTEMPTS {
         time::sleep(Duration::from_millis(300)).await;
@@ -126,7 +126,7 @@ async fn wait_for_leader(cluster: &TestRaftCluster) -> Result<(u32, u64), &'stat
         }
         retry += 1;
     }
-    Err("Timeout waiting for a leader")
+    Err(anyhow::anyhow!("Timeout waiting for a leader"))
 }
 
 async fn get_state(raft_node: Arc<RaftNode>) -> (Role, u32, u64) {

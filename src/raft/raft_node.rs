@@ -404,4 +404,3 @@ impl RaftNode {
         reply
     }
 }
-

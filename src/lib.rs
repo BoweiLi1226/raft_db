@@ -1,3 +1,3 @@
 pub mod raft;
-pub mod storage;
-
+pub mod state_machine;
+pub(crate) mod storage;

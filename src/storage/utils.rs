@@ -16,4 +16,3 @@ pub struct CommandResponse {
 pub enum CommandError {
     KeyDoesNotExist,
 }
-

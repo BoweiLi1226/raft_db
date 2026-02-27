@@ -22,7 +22,7 @@ impl Raft for RaftService {
     async fn request_vote(
         &self,
         args: Request<RequestVoteArgs>,
-    ) -> Result<Response<RequestVoteReply>, Status> {
+    ) -> anyhow::Result<Response<RequestVoteReply>, Status> {
         Ok(Response::new(
             self.raft_node.handle_request_vote(args.into_inner()).await,
         ))
@@ -31,7 +31,7 @@ impl Raft for RaftService {
     async fn append_entries(
         &self,
         args: Request<AppendEntriesArgs>,
-    ) -> Result<Response<AppendEntriesReply>, tonic::Status> {
+    ) -> anyhow::Result<Response<AppendEntriesReply>, tonic::Status> {
         Ok(Response::new(
             self.raft_node
                 .handle_append_entries(args.into_inner())
@@ -39,4 +39,3 @@ impl Raft for RaftService {
         ))
     }
 }
-

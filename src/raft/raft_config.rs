@@ -45,4 +45,3 @@ impl RaftConfig {
         self.nodes.keys().copied().collect()
     }
 }
-

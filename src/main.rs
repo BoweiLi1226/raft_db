@@ -16,13 +16,13 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
     let args = Args::parse();
     let config = std::fs::read_to_string("config.json")?;
     let endpoints = serde_json::from_str::<HashMap<u32, String>>(&config)?;
     if !endpoints.contains_key(&args.id) {
-        return Err(format!("Invalid Raft node id {}", args.id).into());
+        return Err(anyhow::anyhow!("Invalid Raft node id {}", args.id));
     }
     let raft_config = RaftConfig::new(args.id, endpoints);
     let addr = raft_config.nodes[&args.id];
