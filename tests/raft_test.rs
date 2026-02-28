@@ -11,7 +11,6 @@ use tokio::{sync, time};
 use tonic::transport::Server;
 use tracing::Level;
 
-const BASE_PORT: u32 = 5000;
 const MAX_ATTEMPTS: u32 = 10;
 
 struct TestRaftCluster {
@@ -20,16 +19,18 @@ struct TestRaftCluster {
 }
 
 impl TestRaftCluster {
-    pub fn setup(cluster_size: usize) -> Self {
+    pub fn setup(cluster_size: usize, base_port: u32) -> Self {
         let _ = tracing_subscriber::fmt()
             .with_max_level(Level::INFO)
+            .with_thread_names(true)
+            .with_ansi(true)
             .try_init();
         if cluster_size <= 3 || cluster_size >= 21 {
             panic!("Cluster size needs to be between 3 and 21");
         }
         let mut raw_endpoints: HashMap<u32, String> = HashMap::with_capacity(cluster_size);
         for id in 1..=cluster_size {
-            raw_endpoints.insert(id as u32, format!("127.0.0.1:{}", id as u32 + BASE_PORT));
+            raw_endpoints.insert(id as u32, format!("127.0.0.1:{}", id as u32 + base_port));
         }
 
         let mut raft_nodes: HashMap<u32, Arc<RaftNode<SharedKVStore>>> =
@@ -75,7 +76,7 @@ impl TestRaftCluster {
 
 #[tokio::test]
 async fn test_initial_election() {
-    let cluster = TestRaftCluster::setup(5);
+    let cluster = TestRaftCluster::setup(5, 5000);
 
     let Ok((first_leader_id, _)) = wait_for_leader(&cluster).await else {
         panic!("No leader elected for Raft cluster");
@@ -91,7 +92,7 @@ async fn test_initial_election() {
 
 #[tokio::test]
 async fn test_election_after_leader_down() {
-    let mut cluster = TestRaftCluster::setup(5);
+    let mut cluster = TestRaftCluster::setup(5, 5005);
 
     let Ok((leader_id, _)) = wait_for_leader(&cluster).await else {
         panic!("No leader elected for Raft cluster");

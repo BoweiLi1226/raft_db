@@ -18,7 +18,10 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+    tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .with_ansi(true)
+        .init();
     let args = Args::parse();
     let config = std::fs::read_to_string("config.json")?;
     let endpoints = serde_json::from_str::<HashMap<u32, String>>(&config)?;
