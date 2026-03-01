@@ -27,7 +27,9 @@ pub struct RaftNode<T: StateMachine> {
     pub state: Mutex<RaftState>,
     pub log_tx: mpsc::Sender<LogEntry>,
     peer_clients: HashMap<u32, RaftClient<Channel>>,
-    state_machine: T,
+
+    // TODO: This needs to be private
+    pub state_machine: T,
 }
 
 impl<T: StateMachine> RaftNode<T> {
@@ -45,6 +47,27 @@ impl<T: StateMachine> RaftNode<T> {
 
         Arc::clone(&raft_node).start_background_tasks(log_rx);
         raft_node
+    }
+
+    pub async fn start_command(&self, command: &[u8]) -> bool {
+        let mut guard = self.state.lock().await;
+        if Role::Leader != guard.role {
+            false
+        } else {
+            let term = guard.term;
+            let index = guard.log.len() as u64;
+            guard.log.push(LogEntry {
+                term,
+                index,
+                command: command.to_vec(),
+            });
+            tracing::info!(
+                "Raft Node {}: I am processing log at index {}",
+                self.config.me,
+                index,
+            );
+            true
+        }
     }
 
     fn start_background_tasks(self: Arc<Self>, log_rx: mpsc::Receiver<LogEntry>) {
@@ -90,8 +113,15 @@ impl<T: StateMachine> RaftNode<T> {
         }
     }
 
-    async fn apply(self: Arc<Self>, to_apply: &[LogEntry]) {
-        todo!("To be implemented");
+    async fn apply(&self, to_apply: &[LogEntry]) {
+        for log_entry in to_apply {
+            tracing::info!(
+                "Raft Node {}: I am applying log at index {}",
+                self.config.me,
+                log_entry.index
+            );
+            let _ = self.state_machine.apply(&log_entry.command).await;
+        }
     }
 
     async fn election_ticker(self: Arc<Self>) -> ! {
@@ -104,7 +134,7 @@ impl<T: StateMachine> RaftNode<T> {
             time::sleep(timeout).await;
             let should_elect = {
                 let state = self.state.lock().await;
-                state.role != Role::LEADER && state.timeout(timeout)
+                state.role != Role::Leader && state.timeout(timeout)
             };
             if should_elect {
                 Arc::clone(&self).election().await;
@@ -168,7 +198,7 @@ impl<T: StateMachine> RaftNode<T> {
         tokio::select! {
             _ = notify_on_vote.notified() => {
                 let mut state = self.state.lock().await;
-                if state.term == current_term && state.role == Role::CANDIDATE {
+                if state.term == current_term && state.role == Role::Candidate {
                     state.become_leader();
                 } else {
                     return;
@@ -184,7 +214,7 @@ impl<T: StateMachine> RaftNode<T> {
             time::sleep(Duration::from_millis(100)).await;
             let should_send_heartbeat = {
                 let state = self.state.lock().await;
-                state.role == Role::LEADER
+                state.role == Role::Leader
             };
             if should_send_heartbeat {
                 Arc::clone(&self).heartbeat().await;
@@ -368,7 +398,7 @@ impl<T: StateMachine> RaftNode<T> {
 
         // heartbeat comes from valid leader from now on
         state.reset_tick();
-        if (args.term > state.term) || (args.term == state.term && state.role != Role::FOLLOWER) {
+        if (args.term > state.term) || (args.term == state.term && state.role != Role::Follower) {
             state.become_follower(args.term);
         }
 

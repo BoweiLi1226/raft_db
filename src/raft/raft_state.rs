@@ -7,9 +7,9 @@ use crate::raft::{LogEntry, raft_config::RaftConfig};
 #[derive(Default, PartialEq, Eq, Debug, Clone, Copy)]
 pub enum Role {
     #[default]
-    FOLLOWER,
-    CANDIDATE,
-    LEADER,
+    Follower,
+    Candidate,
+    Leader,
 }
 
 #[derive(Debug)]
@@ -34,13 +34,14 @@ impl RaftState {
             voted_for: None,
             log: vec![LogEntry {
                 term: 0,
+                index: 0,
                 command: "".into(),
             }],
             commit_index: 0,
             last_applied: 0,
             next_indices: None,
             match_indices: None,
-            role: Role::FOLLOWER,
+            role: Role::Follower,
             last_tick: Instant::now(),
             raft_config,
         }
@@ -56,7 +57,7 @@ impl RaftState {
 
     pub fn become_follower(&mut self, term: u64) {
         if term >= self.term {
-            self.role = Role::FOLLOWER;
+            self.role = Role::Follower;
             self.next_indices = None;
             self.match_indices = None;
             if term > self.term {
@@ -68,7 +69,7 @@ impl RaftState {
     }
 
     pub fn become_candidate(&mut self) {
-        self.role = Role::CANDIDATE;
+        self.role = Role::Candidate;
         self.term += 1;
         self.voted_for = Some(self.raft_config.me);
         self.match_indices = None;
@@ -82,7 +83,7 @@ impl RaftState {
     }
 
     pub fn become_leader(&mut self) {
-        self.role = Role::LEADER;
+        self.role = Role::Leader;
         let cluster_size = self.raft_config.get_number_of_nodes();
         let log_size = self.log.len() as u64;
         let mut next_indices_map = HashMap::with_capacity(cluster_size);

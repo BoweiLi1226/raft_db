@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub enum Command {
-    GET { key: String },
-    PUT { key: String, value: String },
-    DELETE { key: String },
+    Get { key: String },
+    Put { key: String, value: String },
+    Delete { key: String },
 }
 
 #[derive(Deserialize, Serialize, Debug)]

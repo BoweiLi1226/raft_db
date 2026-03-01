@@ -5,7 +5,7 @@ use raft_db::{
         raft_config::RaftConfig, raft_node::RaftNode, raft_proto::raft_server::RaftServer,
         raft_service::RaftService, raft_state::Role,
     },
-    storage::shared_kv_store::SharedKVStore,
+    storage::{shared_kv_store::SharedKVStore, utils::Command},
 };
 use tokio::{sync, time};
 use tonic::transport::Server;
@@ -105,6 +105,66 @@ async fn test_election_after_leader_down() {
     }
 }
 
+#[tokio::test]
+async fn test_basic_log_sync() {
+    let cluster = TestRaftCluster::setup(5, 5010);
+
+    let Ok((leader_id, _)) = wait_for_leader(&cluster).await else {
+        panic!("No leader elected for Raft cluster");
+    };
+
+    let c1: Vec<u8> = serde_json::to_vec(&Command::Put {
+        key: "xxx".into(),
+        value: "xxx".into(),
+    })
+    .unwrap();
+
+    let c2: Vec<u8> = serde_json::to_vec(&Command::Put {
+        key: "yyy".into(),
+        value: "yyy".into(),
+    })
+    .unwrap();
+
+    let c3: Vec<u8> = serde_json::to_vec(&Command::Put {
+        key: "zzz".into(),
+        value: "zzz".into(),
+    })
+    .unwrap();
+
+    let c4: Vec<u8> = serde_json::to_vec(&Command::Delete { key: "xxx".into() }).unwrap();
+
+    cluster.raft_nodes[&leader_id].start_command(&c1).await;
+    cluster.raft_nodes[&leader_id].start_command(&c2).await;
+    cluster.raft_nodes[&leader_id].start_command(&c3).await;
+    cluster.raft_nodes[&leader_id].start_command(&c4).await;
+
+    time::sleep(Duration::from_millis(600)).await;
+
+    for raft_node in cluster.raft_nodes.values() {
+        assert!(raft_node.state_machine.get("xxx").await.is_err());
+        assert_eq!(
+            "yyy".to_string(),
+            raft_node
+                .state_machine
+                .get("yyy")
+                .await
+                .unwrap()
+                .value
+                .unwrap(),
+        );
+        assert_eq!(
+            "zzz".to_string(),
+            raft_node
+                .state_machine
+                .get("zzz")
+                .await
+                .unwrap()
+                .value
+                .unwrap(),
+        );
+    }
+}
+
 async fn wait_for_leader(cluster: &TestRaftCluster) -> anyhow::Result<(u32, u64)> {
     let mut retry = 0;
     while retry < MAX_ATTEMPTS {
@@ -115,7 +175,7 @@ async fn wait_for_leader(cluster: &TestRaftCluster) -> anyhow::Result<(u32, u64)
         for node in cluster.raft_nodes.values() {
             let node = Arc::clone(node);
             let (role, id, term) = get_state(node).await;
-            if role == Role::LEADER {
+            if role == Role::Leader {
                 leader_id = id;
                 leader_term = term;
                 leader_count += 1;
