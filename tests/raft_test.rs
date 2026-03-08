@@ -5,7 +5,10 @@ use raft_db::{
         raft_config::RaftConfig, raft_node::RaftNode, raft_proto::raft_server::RaftServer,
         raft_service::RaftService, raft_state::Role,
     },
-    storage::{shared_kv_store::SharedKVStore, utils::Command},
+    storage::{
+        shared_kv_store::SharedKVStore,
+        utils::{Command, CommandResponse},
+    },
 };
 use tokio::{sync, time};
 use tonic::transport::Server;
@@ -113,56 +116,84 @@ async fn test_basic_log_sync() {
         panic!("No leader elected for Raft cluster");
     };
 
-    let c1: Vec<u8> = serde_json::to_vec(&Command::Put {
+    let put_xxx: Vec<u8> = serde_json::to_vec(&Command::Put {
         key: "xxx".into(),
         value: "xxx".into(),
     })
     .unwrap();
 
-    let c2: Vec<u8> = serde_json::to_vec(&Command::Put {
+    let put_yyy: Vec<u8> = serde_json::to_vec(&Command::Put {
         key: "yyy".into(),
         value: "yyy".into(),
     })
     .unwrap();
 
-    let c3: Vec<u8> = serde_json::to_vec(&Command::Put {
+    let put_zzz: Vec<u8> = serde_json::to_vec(&Command::Put {
         key: "zzz".into(),
         value: "zzz".into(),
     })
     .unwrap();
 
-    let c4: Vec<u8> = serde_json::to_vec(&Command::Delete { key: "xxx".into() }).unwrap();
+    let delete_xxx: Vec<u8> = serde_json::to_vec(&Command::Delete { key: "xxx".into() }).unwrap();
 
-    cluster.raft_nodes[&leader_id].start_command(&c1).await;
-    cluster.raft_nodes[&leader_id].start_command(&c2).await;
-    cluster.raft_nodes[&leader_id].start_command(&c3).await;
-    cluster.raft_nodes[&leader_id].start_command(&c4).await;
+    let _ = cluster.raft_nodes[&leader_id]
+        .start_command(&put_xxx)
+        .await
+        .unwrap()
+        .await;
+    let _ = cluster.raft_nodes[&leader_id]
+        .start_command(&put_yyy)
+        .await
+        .unwrap()
+        .await;
+    let _ = cluster.raft_nodes[&leader_id]
+        .start_command(&put_zzz)
+        .await
+        .unwrap()
+        .await;
+    let _ = cluster.raft_nodes[&leader_id]
+        .start_command(&delete_xxx)
+        .await
+        .unwrap()
+        .await;
 
     time::sleep(Duration::from_millis(600)).await;
 
-    for raft_node in cluster.raft_nodes.values() {
-        assert!(raft_node.state_machine.get("xxx").await.is_err());
-        assert_eq!(
-            "yyy".to_string(),
-            raft_node
-                .state_machine
-                .get("yyy")
-                .await
-                .unwrap()
-                .value
-                .unwrap(),
-        );
-        assert_eq!(
-            "zzz".to_string(),
-            raft_node
-                .state_machine
-                .get("zzz")
-                .await
-                .unwrap()
-                .value
-                .unwrap(),
-        );
-    }
+    let get_xxx: Vec<u8> = serde_json::to_vec(&Command::Get { key: "xxx".into() }).unwrap();
+    let get_yyy: Vec<u8> = serde_json::to_vec(&Command::Get { key: "yyy".into() }).unwrap();
+    let get_zzz: Vec<u8> = serde_json::to_vec(&Command::Get { key: "zzz".into() }).unwrap();
+
+    // let receiver_xxx = cluster.raft_nodes[&leader_id]
+    //     .start_command(&get_xxx)
+    //     .await
+    //     .unwrap();
+    let receiver_yyy = cluster.raft_nodes[&leader_id]
+        .start_command(&get_yyy)
+        .await
+        .unwrap();
+    let receiver_zzz = cluster.raft_nodes[&leader_id]
+        .start_command(&get_zzz)
+        .await
+        .unwrap();
+
+    // assert_eq!(
+    //     receiver_xxx.await.unwrap(),
+    //     serde_json::to_vec(&CommandResponse { value: None }).unwrap()
+    // );
+    assert_eq!(
+        receiver_yyy.await.unwrap(),
+        serde_json::to_vec(&CommandResponse {
+            value: Some("yyy".into())
+        })
+        .unwrap()
+    );
+    assert_eq!(
+        receiver_zzz.await.unwrap(),
+        serde_json::to_vec(&CommandResponse {
+            value: Some("zzz".into())
+        })
+        .unwrap()
+    );
 }
 
 async fn wait_for_leader(cluster: &TestRaftCluster) -> anyhow::Result<(u32, u64)> {

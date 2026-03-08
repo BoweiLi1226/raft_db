@@ -5,7 +5,7 @@ use std::{
 };
 
 use tokio::{
-    sync::{Mutex, Notify, mpsc},
+    sync::{Mutex, Notify, mpsc, oneshot},
     task::JoinSet,
     time,
 };
@@ -28,8 +28,8 @@ pub struct RaftNode<T: StateMachine> {
     pub log_tx: mpsc::Sender<LogEntry>,
     peer_clients: HashMap<u32, RaftClient<Channel>>,
 
-    // TODO: This needs to be private
-    pub state_machine: T,
+    response_channels: Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>,
+    state_machine: T,
 }
 
 impl<T: StateMachine> RaftNode<T> {
@@ -41,18 +41,19 @@ impl<T: StateMachine> RaftNode<T> {
             config: Arc::clone(&raft_config),
             state: Mutex::new(RaftState::new(Arc::clone(&raft_config))),
             log_tx,
-            state_machine,
             peer_clients,
+            response_channels: Mutex::new(HashMap::new()),
+            state_machine,
         });
 
         Arc::clone(&raft_node).start_background_tasks(log_rx);
         raft_node
     }
 
-    pub async fn start_command(&self, command: &[u8]) -> bool {
+    pub async fn start_command(&self, command: &[u8]) -> Option<oneshot::Receiver<Vec<u8>>> {
         let mut guard = self.state.lock().await;
         if Role::Leader != guard.role {
-            false
+            None
         } else {
             let term = guard.term;
             let index = guard.log.len() as u64;
@@ -66,7 +67,10 @@ impl<T: StateMachine> RaftNode<T> {
                 self.config.me,
                 index,
             );
-            true
+
+            let (tx, rx) = oneshot::channel();
+            self.response_channels.lock().await.insert(index, tx);
+            Some(rx)
         }
     }
 
@@ -120,7 +124,16 @@ impl<T: StateMachine> RaftNode<T> {
                 self.config.me,
                 log_entry.index
             );
-            let _ = self.state_machine.apply(&log_entry.command).await;
+            if let Ok(result) = self.state_machine.apply(&log_entry.command).await
+                && let Some(sender) = self.response_channels.lock().await.remove(&log_entry.index)
+            {
+                tracing::info!(
+                    "Raft Node {}: I am notifying log at index {}",
+                    self.config.me,
+                    log_entry.index
+                );
+                let _ = sender.send(result);
+            }
         }
     }
 
@@ -414,20 +427,16 @@ impl<T: StateMachine> RaftNode<T> {
             let start = (state.last_applied + 1) as usize;
             let end = state.commit_index as usize;
             to_apply = state.log[start..=end].to_vec();
+            state.last_applied = state.commit_index;
         }
 
         drop(state);
 
-        let mut logs_sent = 0;
         for log in to_apply.into_iter() {
             let Ok(_) = self.log_tx.send(log).await else {
                 tracing::error!("Raft node {}: I failed to send log", self.config.me,);
                 break;
             };
-            logs_sent += 1;
-        }
-        if logs_sent > 0 {
-            self.state.lock().await.last_applied += logs_sent;
         }
 
         reply.success = true;
