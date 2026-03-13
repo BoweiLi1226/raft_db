@@ -5,7 +5,7 @@ use std::{
 };
 
 use tokio::{
-    sync::{Mutex, Notify, mpsc, oneshot},
+    sync::{Mutex, Notify, oneshot},
     task::JoinSet,
     time,
 };
@@ -25,9 +25,8 @@ use crate::{
 pub struct RaftNode<T: StateMachine> {
     pub config: Arc<RaftConfig>,
     pub state: Mutex<RaftState>,
-    pub log_tx: mpsc::Sender<LogEntry>,
     peer_clients: HashMap<u32, RaftClient<Channel>>,
-
+    apply_notify: Arc<Notify>,
     response_channels: Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>,
     state_machine: T,
 }
@@ -35,18 +34,17 @@ pub struct RaftNode<T: StateMachine> {
 impl<T: StateMachine> RaftNode<T> {
     pub fn new(raft_config: Arc<RaftConfig>, state_machine: T) -> Arc<Self> {
         let peer_clients = raft_config.make_clients();
-        let (log_tx, log_rx) = mpsc::channel::<LogEntry>(15);
 
         let raft_node = Arc::new(Self {
             config: Arc::clone(&raft_config),
             state: Mutex::new(RaftState::new(Arc::clone(&raft_config))),
-            log_tx,
             peer_clients,
+            apply_notify: Arc::new(Notify::new()),
             response_channels: Mutex::new(HashMap::new()),
             state_machine,
         });
 
-        Arc::clone(&raft_node).start_background_tasks(log_rx);
+        Arc::clone(&raft_node).start_background_tasks();
         raft_node
     }
 
@@ -74,7 +72,7 @@ impl<T: StateMachine> RaftNode<T> {
         }
     }
 
-    fn start_background_tasks(self: Arc<Self>, log_rx: mpsc::Receiver<LogEntry>) {
+    fn start_background_tasks(self: Arc<Self>) {
         let raft_node = Arc::clone(&self);
         tokio::spawn(async move { raft_node.election_ticker().await });
 
@@ -82,38 +80,34 @@ impl<T: StateMachine> RaftNode<T> {
         tokio::spawn(async move { raft_node.heartbeat_ticker().await });
 
         let raft_node = Arc::clone(&self);
-        tokio::spawn(async move { raft_node.apply_ticker(log_rx).await });
+        tokio::spawn(async move { raft_node.apply_ticker().await });
     }
 
-    async fn apply_ticker(self: Arc<Self>, log_rx: mpsc::Receiver<LogEntry>) -> ! {
-        let mut log_rx = log_rx;
+    async fn apply_ticker(self: Arc<Self>) -> ! {
         loop {
-            let mut batch: Vec<LogEntry> = Vec::with_capacity(15);
-            // only awaken if we receive one log entry from channel
-            match log_rx.recv().await {
-                Some(log_entry) => batch.push(log_entry),
-                None => panic!("Raft node {}: My apply channel is closed", self.config.me),
-            }
-
-            // we wait for a total of 100 milliseconds or 20 messages
-            let sleep = time::sleep(Duration::from_millis(100));
-            tokio::pin!(sleep);
-            loop {
-                tokio::select! {
-                    _ = &mut sleep => { break; }
-                    msg = log_rx.recv() => {
-                        if let Some(msg) = msg {
-                            batch.push(msg);
-                            if batch.len() >= 20 {
-                                break;
-                            }
-                        } else {
-                            panic!("Raft node {}: My apply channel is closed", self.config.me);
-                        }
-                    }
+            let notified = self.apply_notify.notified();
+            let to_apply = {
+                let state = self.state.lock().await;
+                if state.commit_index > state.last_applied {
+                    let start = (state.last_applied + 1) as usize;
+                    let end = state.commit_index as usize;
+                    let entries = state.log[start..=end].to_vec();
+                    Some(entries)
+                } else {
+                    None
                 }
+            };
+
+            if let Some(entries) = to_apply {
+                self.apply(&entries).await;
+                let mut state = self.state.lock().await;
+                state.last_applied += entries.len() as u64;
+                if state.commit_index > state.last_applied {
+                    continue;
+                }
+            } else {
+                notified.await;
             }
-            Arc::clone(&self).apply(&batch).await;
         }
     }
 
@@ -265,7 +259,7 @@ impl<T: StateMachine> RaftNode<T> {
         };
         let number_of_success = Arc::new(atomic::AtomicU32::new(1));
         let success_needed_for_commit = (self.config.nodes.len() / 2 + 1) as u32;
-        let notify_on_commit_update = Arc::new(Notify::new());
+        let notify_commit = Arc::new(Notify::new());
         for (&id, client) in &self.peer_clients {
             let Some(request) = requests.remove(&id) else {
                 tracing::error!(
@@ -277,7 +271,7 @@ impl<T: StateMachine> RaftNode<T> {
             };
             let mut client = client.clone();
             let number_of_success = Arc::clone(&number_of_success);
-            let notify_on_commit_update = Arc::clone(&notify_on_commit_update);
+            let notify_commit = Arc::clone(&notify_commit);
             let raft_node = Arc::clone(&self);
             tasks.spawn(async move {
                 if let Ok(response) = client.append_entries(request).await {
@@ -287,24 +281,26 @@ impl<T: StateMachine> RaftNode<T> {
                         state.become_follower(reply.term);
                     }
 
-                    let Some(match_indices) = state.match_indices.as_mut() else {
-                        return;
-                    };
                     if reply.success {
-                        match_indices.insert(id, target_index);
-                    }
-
-                    let Some(next_indices) = state.next_indices.as_mut() else {
-                        return;
-                    };
-                    if reply.success {
+                        let Some(next_indices) = state.next_indices.as_mut() else {
+                            return;
+                        };
                         next_indices.insert(id, target_index + 1);
+                        let Some(match_indices) = state.match_indices.as_mut() else {
+                            return;
+                        };
+                        match_indices.insert(id, target_index);
                         let number_of_success =
                             number_of_success.fetch_add(1, atomic::Ordering::SeqCst) + 1;
                         if number_of_success >= success_needed_for_commit {
-                            notify_on_commit_update.notify_one();
+                            state.commit_index = target_index;
+                            raft_node.apply_notify.notify_waiters();
+                            notify_commit.notify_one();
                         }
                     } else {
+                        let Some(next_indices) = state.next_indices.as_mut() else {
+                            return;
+                        };
                         let next_index = next_indices[&id];
                         if next_index > 1 {
                             next_indices.insert(id, next_index - 1);
@@ -314,40 +310,9 @@ impl<T: StateMachine> RaftNode<T> {
             });
         }
         tokio::select! {
-            _ = notify_on_commit_update.notified() => {
-                let to_apply = {
-                    let mut state = self.state.lock().await;
-                    let last_index = (state.log.len() - 1) as u64;
-                    let mut entries = vec![];
-                    if target_index > state.commit_index && target_index <= last_index && state.log[target_index as usize].term == state.term {
-                        state.commit_index = target_index;
-                        if state.commit_index > state.last_applied {
-                            let start = (state.last_applied + 1) as usize;
-                            let end = state.commit_index as usize;
-                            entries = state.log[start..=end].to_vec()
-                        }
-                    }
-                    entries
-                };
-
-                let mut logs_sent = 0;
-                for log in to_apply.into_iter() {
-                    let Ok(_) = self.log_tx.send(log).await else {
-                        tracing::error!(
-                            "Raft node {}: I failed to send log",
-                            self.config.me,
-                        );
-                        break;
-                    };
-                    logs_sent += 1;
-                }
-                if logs_sent > 0 {
-                    self.state.lock().await.last_applied += logs_sent;
-                }
-            }
-            _ = time::sleep(Duration::from_millis(100)) => {}
+            _ = notify_commit.notified() => {},
+            _ = time::sleep(Duration::from_millis(80)) => {},
         }
-        tasks.abort_all();
     }
 
     pub async fn handle_request_vote(&self, args: RequestVoteArgs) -> RequestVoteReply {
@@ -421,22 +386,8 @@ impl<T: StateMachine> RaftNode<T> {
         state.append_log(args.prev_log_index, &args.entries);
         state.update_commit(args.leader_commit);
 
-        // notify applier
-        let mut to_apply = vec![];
         if state.commit_index > state.last_applied {
-            let start = (state.last_applied + 1) as usize;
-            let end = state.commit_index as usize;
-            to_apply = state.log[start..=end].to_vec();
-            state.last_applied = state.commit_index;
-        }
-
-        drop(state);
-
-        for log in to_apply.into_iter() {
-            let Ok(_) = self.log_tx.send(log).await else {
-                tracing::error!("Raft node {}: I failed to send log", self.config.me,);
-                break;
-            };
+            self.apply_notify.notify_waiters();
         }
 
         reply.success = true;
