@@ -26,7 +26,7 @@ pub struct RaftNode<T: StateMachine> {
     pub config: Arc<RaftConfig>,
     pub state: Mutex<RaftState>,
     peer_clients: HashMap<u32, RaftClient<Channel>>,
-    apply_notify: Arc<Notify>,
+    apply_notify: Notify,
     response_channels: Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>,
     state_machine: T,
 }
@@ -39,7 +39,7 @@ impl<T: StateMachine> RaftNode<T> {
             config: Arc::clone(&raft_config),
             state: Mutex::new(RaftState::new(Arc::clone(&raft_config))),
             peer_clients,
-            apply_notify: Arc::new(Notify::new()),
+            apply_notify: Notify::new(),
             response_channels: Mutex::new(HashMap::new()),
             state_machine,
         });
