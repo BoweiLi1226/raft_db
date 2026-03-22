@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use raft_db::{
+use quorum::{
     raft::{
         raft_config::RaftConfig, raft_node::RaftNode, raft_proto::raft_server::RaftServer,
         raft_service::RaftService, raft_state::Role,

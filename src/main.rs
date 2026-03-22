@@ -1,11 +1,11 @@
 use std::{collections::HashMap, sync::Arc};
 
 use clap::Parser;
-use raft_db::raft::{
+use quorum::raft::{
     raft_config::RaftConfig, raft_node::RaftNode, raft_proto::raft_server::RaftServer,
     raft_service::RaftService,
 };
-use raft_db::storage::shared_kv_store::SharedKVStore;
+use quorum::storage::shared_kv_store::SharedKVStore;
 use tonic::transport::Server;
 use tracing::Level;
 
